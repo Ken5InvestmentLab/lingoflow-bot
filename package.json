@@ -3,9 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-  "start": "node index.js"
- },
-
+    "start": "node index.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Ken5InvestmentLab/lingoflow-bot.git"
@@ -17,5 +16,8 @@
     "url": "https://github.com/Ken5InvestmentLab/lingoflow-bot/issues"
   },
   "homepage": "https://github.com/Ken5InvestmentLab/lingoflow-bot#readme",
-  "description": ""
+  "description": "",
+  "dependencies": {
+    "dotenv": "^17.3.1"
+  }
 }
