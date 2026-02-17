@@ -12,7 +12,7 @@ const GUILD_ID = process.env.GUILD_ID;
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 // 変数名を model に統一
-const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" }); 
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" }); 
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
