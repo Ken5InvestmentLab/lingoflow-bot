@@ -43,7 +43,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
     // 🔥 1. 何よりも先に deferReply (失敗してもプロセスを落とさない)
     try {
-        await interaction.deferReply({ ephemeral: true });
+        // ephemeral: true の代わりに新しい書き方（MessageFlags.Ephemeral）を使う
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     } catch (e) {
         console.error("❌ deferReply失敗 (3秒制限):", e.message);
         return; 
