@@ -87,7 +87,7 @@ Text: ${originalText}`;
                     // API制限(429)やサーバー過負荷(503)の処理
                     if (err.status === 429) {
                         return await interaction.editReply(
-                            "⚠️ You may have exceeded the free tier limit (approx. 20 requests/day). Please wait a while or use **'Fast Translate'** instead.\n**Gemini APIの利用制限に達しました。**\n無料枠の上限（1日20回程度）を超えた可能性があります。しばらく待つか、**'Fast Translate'** を使ってください。"
+                            "⚠️ You may have exceeded the free tier limit (approx. 20 requests/day). Please wait a while or use **'Fast Translate'** instead.\n\nGemini APIの利用制限に達しました。\n無料枠の上限（1日20回程度）を超えた可能性があります。しばらく待つか、**'Fast Translate'** を使ってください。"
                         ).catch(() => {});
                     }
                     
