@@ -1,0 +1,84 @@
+require('dotenv').config();
+
+const { Client, GatewayIntentBits, ContextMenuCommandBuilder, ApplicationCommandType, MessageFlags, Events } = require('discord.js');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const translate = require('google-translate-api-next');
+
+const TOKEN = process.env.DISCORD_TOKEN;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GUILD_ID = process.env.GUILD_ID;
+
+// ----------------
+
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+// 変数名を model に統一
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); 
+
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+client.once(Events.ClientReady, async (readyClient) => {
+    console.log(`✅ LingoFlow Dual Mode Ready! Logged in as ${readyClient.user.tag}`);
+
+    const fastData = new ContextMenuCommandBuilder()
+        .setName('Fast Translate')
+        .setType(ApplicationCommandType.Message);
+
+    const deepData = new ContextMenuCommandBuilder()
+        .setName('Deep Translate')
+        .setType(ApplicationCommandType.Message);
+
+    const guild = client.guilds.cache.get(GUILD_ID);
+    if (guild) {
+        await guild.commands.set([fastData, deepData]);
+        console.log('✅ Two commands registered successfully!');
+    }
+});
+
+client.on(Events.InteractionCreate, async interaction => {
+    if (!interaction.isMessageContextMenuCommand()) return;
+
+    const originalText = interaction.targetMessage.content;
+    const targetLang = interaction.locale.split('-')[0];
+
+    if (!originalText) {
+        return interaction.reply({ content: '翻訳するテキストがありません。', flags: [MessageFlags.Ephemeral] });
+    }
+
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+    // --- Fast Translate (Google) ---
+    if (interaction.commandName === 'Fast Translate') {
+        try {
+            // ライブラリを使用して翻訳
+            const res = await translate(originalText, { to: targetLang });
+            await interaction.editReply({
+                content: `⚡ **Fast Translate (Google):**\n${res.text}`
+            });
+        } catch (error) {
+            console.error(error);
+            await interaction.editReply('Fast Translateでエラーが発生しました。');
+        }
+    }
+
+    // --- Deep Translate (Gemini) ---
+    if (interaction.commandName === 'Deep Translate') {
+        try {
+            const prompt = `Translate the following text into the language of code "${targetLang}". 
+            Context: Online chat. Deliver only the translated text.
+            Text: ${originalText}`;
+
+            // 変数名を model に修正
+            const result = await model.generateContent(prompt);
+            const translatedText = result.response.text();
+
+            await interaction.editReply({
+                content: `🧠 **Deep Translate (Gemini):**\n${translatedText}`
+            });
+        } catch (error) {
+            console.error(error);
+            await interaction.editReply('Deep Translateでエラーが発生しました。');
+        }
+    }
+});
+
+client.login(TOKEN);
