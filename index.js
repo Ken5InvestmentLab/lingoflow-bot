@@ -12,7 +12,7 @@ const GUILD_ID = process.env.GUILD_ID;
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 // 変数名を model に統一
-const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" }); 
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); 
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -82,3 +82,14 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 client.login(TOKEN);
+
+const express = require("express");
+const app = express();
+
+app.get("/", (req, res) => {
+  res.send("Bot is running!");
+});
+
+app.listen(3000, () => {
+  console.log("Web server running on port 3000");
+});
