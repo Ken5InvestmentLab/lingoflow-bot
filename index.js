@@ -9,7 +9,6 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 const express = require('express');
-const WebSocket = require('ws');
 
 // =============================
 // Environment Variables
@@ -102,57 +101,6 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 
 // =============================
-// Raw Gateway WebSocket Test
-// =============================
-async function rawGatewayProbe() {
-  return new Promise((resolve) => {
-    console.log('🧪 raw gateway probe start');
-
-    const url = 'wss://gateway.discord.gg/?v=10&encoding=json';
-    const ws = new WebSocket(url);
-
-    let settled = false;
-
-    const done = (result) => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
-
-    const timer = setTimeout(() => {
-      console.error('❌ raw gateway probe timeout after 10s');
-      try { ws.terminate(); } catch {}
-      done({ ok: false, reason: 'timeout' });
-    }, 10000);
-
-    ws.on('open', () => {
-      console.log('✅ raw gateway probe open');
-    });
-
-    ws.on('message', (data) => {
-      const text = data.toString();
-      console.log('📩 raw gateway first message:', text.slice(0, 300));
-
-      clearTimeout(timer);
-      try { ws.close(); } catch {}
-      done({ ok: true, reason: 'message_received' });
-    });
-
-    ws.on('close', (code, reason) => {
-      console.log(`ℹ raw gateway closed code=${code} reason=${reason?.toString() || ''}`);
-      clearTimeout(timer);
-      done({ ok: true, reason: 'closed_after_open_or_close_event' });
-    });
-
-    ws.on('error', (err) => {
-      console.error('❌ raw gateway error:', err);
-      clearTimeout(timer);
-      done({ ok: false, reason: err?.message || 'ws_error' });
-    });
-  });
-}
-
-// =============================
 // Ready Events
 // =============================
 client.on('ready', () => {
@@ -212,13 +160,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'ping') {
-        console.log('🏓 /ping received');
-
         await interaction.reply({
           content: 'pong',
           ephemeral: true,
         });
-
         console.log('✅ /ping reply success');
         return;
       }
@@ -231,13 +176,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (interaction.isMessageContextMenuCommand()) {
-      console.log('📝 Message context menu received');
-
       await interaction.reply({
         content: '受信はできています。',
         ephemeral: true,
       });
-
       console.log('✅ Context menu reply success');
       return;
     }
@@ -251,6 +193,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // =============================
 // Timed Status Checks
 // =============================
+let loginSettled = false;
+
 setTimeout(() => {
   console.log('⏰ 10s status check', {
     ready: typeof client.isReady === 'function' ? client.isReady() : false,
@@ -280,6 +224,12 @@ setInterval(() => {
   });
 }, 30000);
 
+setTimeout(() => {
+  if (!loginSettled) {
+    console.error('⛔ login promise still pending after 30s');
+  }
+}, 30000);
+
 // =============================
 // Process Events
 // =============================
@@ -307,22 +257,11 @@ process.on('SIGTERM', async () => {
 });
 
 // =============================
-// Login watchdog
+// Login
 // =============================
-let loginSettled = false;
-
-// =============================
-// Main
-// =============================
-(async () => {
-  if (!TOKEN) {
-    console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
-    return;
-  }
-
-  const probe = await rawGatewayProbe();
-  console.log('🧪 raw gateway probe result:', probe);
-
+if (!TOKEN) {
+  console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
+} else {
   console.log('11. before client.login');
 
   client.login(TOKEN)
@@ -336,10 +275,4 @@ let loginSettled = false;
     });
 
   console.log('12. after client.login call');
-})();
-
-setTimeout(() => {
-  if (!loginSettled) {
-    console.error('⛔ login promise still pending after 30s');
-  }
-}, 30000);
+}
