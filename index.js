@@ -29,11 +29,11 @@ if (!GUILD_ID) console.error('❌ GUILD_ID が未設定です');
 // =============================
 const app = express();
 
+let botReady = false;
+
 app.get('/', (req, res) => {
   res.status(200).send('Bot is running!');
 });
-
-let botReady = false;
 
 app.get('/healthz', (req, res) => {
   res.status(200).json({
@@ -51,9 +51,10 @@ app.listen(PORT, '0.0.0.0', () => {
 // =============================
 // Eris Client
 // =============================
+// トラブル再発時に暴れにくいよう、最初は autoreconnect を false
 const bot = new Eris(TOKEN, {
   intents: ['guilds'],
-  autoreconnect: true,
+  autoreconnect: false,
   maxShards: 1,
   restMode: true,
 });
@@ -71,10 +72,6 @@ bot.on('warn', (msg) => {
 
 bot.on('disconnect', (err) => {
   console.warn('⚠ disconnect:', err);
-});
-
-bot.on('reconnecting', (attempt) => {
-  console.warn('🔁 reconnecting, attempt:', attempt);
 });
 
 bot.on('resume', () => {
@@ -152,17 +149,11 @@ bot.on('interactionCreate', async (interaction) => {
     });
   } catch (err) {
     console.error('❌ interaction error:', err);
-    try {
-      await interaction.createMessage({
-        content: 'エラーが発生しました。',
-        flags: 64
-      });
-    } catch (_) {}
   }
 });
 
 // =============================
-// Timed Status Checks
+// Status Logs
 // =============================
 setTimeout(() => {
   console.log('⏰ 20s status check', {
