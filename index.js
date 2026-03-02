@@ -1,5 +1,11 @@
 require('dotenv').config();
 
+// =============================
+// Force ws package instead of built-in WebSocket
+// =============================
+const WS = require('ws');
+globalThis.WebSocket = WS;
+
 const {
   Client,
   GatewayIntentBits,
@@ -27,6 +33,7 @@ console.log('GUILD_ID exists?:', !!GUILD_ID);
 console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
 console.log('discord.js version:', require('discord.js').version);
+console.log('Forced WebSocket package:', typeof globalThis.WebSocket);
 console.log('PORT:', PORT);
 
 if (!TOKEN) console.error('❌ DISCORD_TOKEN が未設定です');
