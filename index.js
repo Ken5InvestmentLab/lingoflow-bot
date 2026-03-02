@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { Client, GatewayIntentBits, ContextMenuCommandBuilder, ApplicationCommandType, Events } = require('discord.js');
+const { Client, GatewayIntentBits, ContextMenuCommandBuilder, ApplicationCommandType, MessageFlags, Events } = require('discord.js');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const translate = require('google-translate-api-next');
 
@@ -35,10 +35,6 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.InteractionCreate, async interaction => {
-    console.log("✅ Interaction received:", interaction.commandName);
-
-await interaction.deferReply({ ephemeral: true });
-console.log("✅ deferReply OK");
     // コンテキストメニューコマンド以外は無視
     if (!interaction.isMessageContextMenuCommand()) return;
 
@@ -48,7 +44,7 @@ console.log("✅ deferReply OK");
     // 🔥 1. 何よりも先に deferReply (失敗してもプロセスを落とさない)
     try {
         // ephemeral: true の代わりに新しい書き方（MessageFlags.Ephemeral）を使う
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     } catch (e) {
         console.error("❌ deferReply失敗 (3秒制限):", e.message);
         return; 
@@ -136,4 +132,3 @@ app.listen(3000, () => {
 
 client.on("error", console.error);
 process.on("unhandledRejection", console.error);
-
