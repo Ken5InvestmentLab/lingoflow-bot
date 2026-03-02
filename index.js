@@ -33,10 +33,12 @@ app.get('/', (req, res) => {
   res.status(200).send('Bot is running!');
 });
 
+let botReady = false;
+
 app.get('/healthz', (req, res) => {
   res.status(200).json({
     ok: true,
-    ready: !!bot.ready,
+    ready: botReady,
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
@@ -50,7 +52,7 @@ app.listen(PORT, '0.0.0.0', () => {
 // Eris Client
 // =============================
 const bot = new Eris(TOKEN, {
-  intents: ["guilds"],
+  intents: ['guilds'],
   autoreconnect: true,
   maxShards: 1,
   restMode: true,
@@ -65,11 +67,6 @@ bot.on('error', (err) => {
 
 bot.on('warn', (msg) => {
   console.warn('⚠ warn:', msg);
-});
-
-bot.on('debug', (msg) => {
-  if (typeof msg === 'string' && msg.includes('token')) return;
-  console.log('🐞 debug:', msg);
 });
 
 bot.on('disconnect', (err) => {
@@ -88,6 +85,7 @@ bot.on('resume', () => {
 // Ready
 // =============================
 bot.on('ready', async () => {
+  botReady = true;
   console.log('🎉 ready event fired');
   console.log(`✅ Ready as ${bot.user.username}#${bot.user.discriminator}`);
   console.log(`✅ Bot user id: ${bot.user.id}`);
@@ -129,9 +127,7 @@ bot.on('interactionCreate', async (interaction) => {
     console.log('🔥 interactionCreate fired');
     console.log('type:', interaction.type);
     console.log('name:', interaction.data?.name);
-    console.log('user:', interaction.member?.user?.username || interaction.user?.username);
 
-    // Slash command
     if (interaction.data?.type === 1 && interaction.data?.name === 'ping') {
       await interaction.createMessage({
         content: 'pong',
@@ -141,7 +137,6 @@ bot.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // Message context menu
     if (interaction.data?.type === 3) {
       await interaction.createMessage({
         content: '受信はできています。',
@@ -170,29 +165,22 @@ bot.on('interactionCreate', async (interaction) => {
 // Timed Status Checks
 // =============================
 setTimeout(() => {
-  console.log('⏰ 10s status check', {
-    ready: !!bot.ready,
-    uptime: Math.floor(process.uptime()),
-  });
-}, 10000);
-
-setTimeout(() => {
   console.log('⏰ 20s status check', {
-    ready: !!bot.ready,
+    ready: botReady,
     uptime: Math.floor(process.uptime()),
   });
 }, 20000);
 
 setTimeout(() => {
   console.log('⏰ 60s status check', {
-    ready: !!bot.ready,
+    ready: botReady,
     uptime: Math.floor(process.uptime()),
   });
 }, 60000);
 
 setInterval(() => {
   console.log('🩺 heartbeat', {
-    ready: !!bot.ready,
+    ready: botReady,
     uptime: Math.floor(process.uptime()),
   });
 }, 30000);
