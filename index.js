@@ -9,6 +9,7 @@ const {
   SlashCommandBuilder,
 } = require('discord.js');
 const express = require('express');
+const WebSocket = require('ws');
 
 // =============================
 // Environment Variables
@@ -26,6 +27,7 @@ console.log('DISCORD_TOKEN exists?:', !!TOKEN);
 console.log('GUILD_ID exists?:', !!GUILD_ID);
 console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
+console.log('discord.js version:', require('discord.js').version);
 console.log('PORT:', PORT);
 
 if (!TOKEN) console.error('❌ DISCORD_TOKEN が未設定です');
@@ -98,6 +100,57 @@ app.get('/healthz', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 Web server running on port ${PORT}`);
 });
+
+// =============================
+// Raw Gateway WebSocket Test
+// =============================
+async function rawGatewayProbe() {
+  return new Promise((resolve) => {
+    console.log('🧪 raw gateway probe start');
+
+    const url = 'wss://gateway.discord.gg/?v=10&encoding=json';
+    const ws = new WebSocket(url);
+
+    let settled = false;
+
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      console.error('❌ raw gateway probe timeout after 10s');
+      try { ws.terminate(); } catch {}
+      done({ ok: false, reason: 'timeout' });
+    }, 10000);
+
+    ws.on('open', () => {
+      console.log('✅ raw gateway probe open');
+    });
+
+    ws.on('message', (data) => {
+      const text = data.toString();
+      console.log('📩 raw gateway first message:', text.slice(0, 300));
+
+      clearTimeout(timer);
+      try { ws.close(); } catch {}
+      done({ ok: true, reason: 'message_received' });
+    });
+
+    ws.on('close', (code, reason) => {
+      console.log(`ℹ raw gateway closed code=${code} reason=${reason?.toString() || ''}`);
+      clearTimeout(timer);
+      done({ ok: true, reason: 'closed_after_open_or_close_event' });
+    });
+
+    ws.on('error', (err) => {
+      console.error('❌ raw gateway error:', err);
+      clearTimeout(timer);
+      done({ ok: false, reason: err?.message || 'ws_error' });
+    });
+  });
+}
 
 // =============================
 // Ready Events
@@ -258,9 +311,18 @@ process.on('SIGTERM', async () => {
 // =============================
 let loginSettled = false;
 
-if (!TOKEN) {
-  console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
-} else {
+// =============================
+// Main
+// =============================
+(async () => {
+  if (!TOKEN) {
+    console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
+    return;
+  }
+
+  const probe = await rawGatewayProbe();
+  console.log('🧪 raw gateway probe result:', probe);
+
   console.log('11. before client.login');
 
   client.login(TOKEN)
@@ -274,7 +336,7 @@ if (!TOKEN) {
     });
 
   console.log('12. after client.login call');
-}
+})();
 
 setTimeout(() => {
   if (!loginSettled) {
