@@ -1,134 +1,171 @@
 require('dotenv').config();
 
-const { Client, GatewayIntentBits, ContextMenuCommandBuilder, ApplicationCommandType, MessageFlags, Events } = require('discord.js');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const {
+  Client,
+  GatewayIntentBits,
+  ContextMenuCommandBuilder,
+  ApplicationCommandType,
+  MessageFlags,
+  Events,
+} = require('discord.js');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const translate = require('google-translate-api-next');
+const express = require('express');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GUILD_ID = process.env.GUILD_ID;
+const PORT = process.env.PORT || 3000;
 
-// ----------------
+console.log('=== Boot start ===');
+console.log('DISCORD_TOKEN exists?:', !!TOKEN);
+console.log('GEMINI_API_KEY exists?:', !!GEMINI_API_KEY);
+console.log('GUILD_ID exists?:', !!GUILD_ID);
+console.log('NODE_VERSION:', process.version);
+console.log('PORT:', PORT);
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-// 変数名を model に統一
-const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" }); 
+const model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-
-client.once(Events.ClientReady, async (readyClient) => {
-    console.log(`✅ LingoFlow Dual Mode Ready! Logged in as ${readyClient.user.tag}`);
-
-    const fastData = new ContextMenuCommandBuilder()
-        .setName('Fast Translate')
-        .setType(ApplicationCommandType.Message);
-
-    const deepData = new ContextMenuCommandBuilder()
-        .setName('Deep Translate')
-        .setType(ApplicationCommandType.Message);
-
-    const guild = client.guilds.cache.get(GUILD_ID);
-    if (guild) {
-        await guild.commands.set([fastData, deepData]);
-        console.log('✅ Two commands registered successfully!');
-    }
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
 });
 
-client.on(Events.InteractionCreate, async interaction => {
-    // コンテキストメニューコマンド以外は無視
-    if (!interaction.isMessageContextMenuCommand()) return;
+client.once(Events.ClientReady, async (readyClient) => {
+  console.log(`✅ Ready as ${readyClient.user.tag}`);
 
-    // 二重応答防止
-    if (interaction.replied || interaction.deferred) return;
+  try {
+    const fastData = new ContextMenuCommandBuilder()
+      .setName('Fast Translate')
+      .setType(ApplicationCommandType.Message);
 
-    // 🔥 1. 何よりも先に deferReply (失敗してもプロセスを落とさない)
-    try {
-        // ephemeral: true の代わりに新しい書き方（MessageFlags.Ephemeral）を使う
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    } catch (e) {
-        console.error("❌ deferReply失敗 (3秒制限):", e.message);
-        return; 
+    const deepData = new ContextMenuCommandBuilder()
+      .setName('Deep Translate')
+      .setType(ApplicationCommandType.Message);
+
+    const guild = client.guilds.cache.get(GUILD_ID);
+
+    if (!guild) {
+      console.error('❌ Guild not found. Check GUILD_ID');
+      return;
     }
 
-    try {
-        const originalText = interaction.targetMessage?.content;
-        const targetLang = (interaction.locale || 'ja').split('-')[0];
+    console.log(`✅ Guild found: ${guild.name} (${guild.id})`);
+    await guild.commands.set([fastData, deepData]);
+    console.log('✅ Commands registered');
+  } catch (err) {
+    console.error('❌ Command registration error:', err);
+  }
+});
 
-        if (!originalText) {
-            return await interaction.editReply('翻訳するテキストがありません。').catch(() => {});
-        }
+client.on(Events.InteractionCreate, async (interaction) => {
+  console.log('--- Interaction received ---');
+  console.log('commandName:', interaction.commandName);
+  console.log('user:', interaction.user?.tag);
+  console.log('locale:', interaction.locale);
 
-        // --- Fast Translate (Google) ---
-        if (interaction.commandName === 'Fast Translate') {
-            try {
-                const res = await translate(originalText, { to: targetLang });
-                return await interaction.editReply(`⚡ **Fast Translate (Google):**\n${res.text}`);
-            } catch (err) {
-                console.error("Fast Translate Error:", err);
-                return await interaction.editReply("⚡ Fast Translateでエラーが発生しました。");
-            }
-        }
+  if (!interaction.isMessageContextMenuCommand()) return;
+  if (interaction.replied || interaction.deferred) return;
 
-        // --- Deep Translate (Gemini) ---
-        if (interaction.commandName === 'Deep Translate') {
-            const prompt = `Translate the following text into the language of code "${targetLang}". 
+  try {
+    console.log('⏳ deferReply start');
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    console.log('✅ deferReply success');
+  } catch (e) {
+    console.error('❌ deferReply failed:', e);
+    return;
+  }
+
+  try {
+    const originalText = interaction.targetMessage?.content;
+    const targetLang = (interaction.locale || 'ja').split('-')[0];
+
+    if (!originalText || !originalText.trim()) {
+      await interaction.editReply('翻訳するテキストがありません。');
+      return;
+    }
+
+    if (interaction.commandName === 'Fast Translate') {
+      console.log('⚡ Fast Translate start');
+      const res = await translate(originalText, { to: targetLang });
+      await interaction.editReply(`⚡ **Fast Translate (Google):**\n${res.text}`);
+      console.log('✅ Fast Translate reply success');
+      return;
+    }
+
+    if (interaction.commandName === 'Deep Translate') {
+      console.log('🧠 Deep Translate start');
+
+      const prompt = `Translate the following text into the language of code "${targetLang}".
 Context: Online chat. Deliver only the translated text.
 Text: ${originalText}`;
 
-            let attempts = 0;
-            let translatedText = null;
+      let attempts = 0;
+      let translatedText = null;
 
-            while (attempts < 3) {
-                try {
-                    const result = await model.generateContent(prompt);
-                    translatedText = result.response.text();
-                    break; // 成功したらループ脱出
-                } catch (err) {
-                    // API制限(429)やサーバー過負荷(503)の処理
-                    if (err.status === 429) {
-                        return await interaction.editReply(
-                            "⚠️ You may have exceeded the free tier limit (approx. 20 requests/day). Please wait a while or use **'Fast Translate'** instead.\n\nGemini APIの利用制限に達しました。\n無料枠の上限（1日20回程度）を超えた可能性があります。しばらく待つか、**'Fast Translate'** を使ってください。"
-                        ).catch(() => {});
-                    }
-                    
-                    if (err.status === 503 || err.status === 500) {
-                        attempts++;
-                        console.log(`Retry attempt ${attempts}...`);
-                        await new Promise(res => setTimeout(res, 2000));
-                    } else {
-                        throw err; // それ以外のエラーはcatchへ
-                    }
-                }
-            }
+      while (attempts < 3) {
+        try {
+          console.log(`🧠 Gemini attempt ${attempts + 1}`);
+          const result = await model.generateContent(prompt);
+          translatedText = result.response.text();
+          break;
+        } catch (err) {
+          console.error(`❌ Gemini error attempt ${attempts + 1}:`, err);
 
-            if (!translatedText) {
-                return await interaction.editReply(
-                    "🧠 Deep Translateが現在混雑しています。少し時間を置いて再試行してください。"
-                );
-            }
+          if (err.status === 429) {
+            await interaction.editReply(
+              "⚠️ Gemini APIの利用制限に達した可能性があります。しばらく待つか、'Fast Translate' を使ってください。"
+            );
+            return;
+          }
 
-            return await interaction.editReply(`🧠 **Deep Translate (Gemini):**\n${translatedText}`);
+          if (err.status === 503 || err.status === 500) {
+            attempts++;
+            await new Promise((res) => setTimeout(res, 2000));
+          } else {
+            throw err;
+          }
         }
+      }
 
-    } catch (error) {
-        console.error("🔥 Interaction Execution Error:", error);
-        // すでにdefer済みなのでeditReplyを使用
-        await interaction.editReply('翻訳処理中に予期せぬエラーが発生しました。').catch(() => {});
+      if (!translatedText) {
+        await interaction.editReply('🧠 Deep Translateが現在混雑しています。少し時間を置いて再試行してください。');
+        return;
+      }
+
+      await interaction.editReply(`🧠 **Deep Translate (Gemini):**\n${translatedText}`);
+      console.log('✅ Deep Translate reply success');
+      return;
     }
+
+    await interaction.editReply('不明なコマンドです。');
+  } catch (error) {
+    console.error('🔥 Interaction error:', error);
+    await interaction.editReply('翻訳処理中に予期せぬエラーが発生しました。').catch(() => {});
+  }
 });
 
-client.login(TOKEN);
+client.on('error', (err) => console.error('❌ Client error:', err));
+client.on('warn', (info) => console.warn('⚠ Warn:', info));
+client.on('shardDisconnect', (event, id) => console.warn(`⚠ shardDisconnect shard=${id} code=${event.code}`));
+client.on('shardError', (error, id) => console.error(`❌ shardError shard=${id}`, error));
+client.on('shardReconnecting', (id) => console.warn(`🔁 shardReconnecting shard=${id}`));
+client.on('shardResume', (id, replayed) => console.log(`✅ shardResume shard=${id} replayed=${replayed}`));
 
-const express = require("express");
+process.on('unhandledRejection', (reason) => console.error('❌ unhandledRejection:', reason));
+process.on('uncaughtException', (err) => console.error('❌ uncaughtException:', err));
+process.on('exit', (code) => console.log(`ℹ process exit code: ${code}`));
+
+client.login(TOKEN)
+  .then(() => console.log('✅ client.login() success'))
+  .catch((err) => console.error('❌ client.login() failed:', err));
+
 const app = express();
-
-app.get("/", (req, res) => {
-  res.send("Bot is running!");
+app.get('/', (req, res) => {
+  console.log('🌐 GET /');
+  res.send('Bot is running!');
 });
 
-app.listen(3000, () => {
-  console.log("Web server running on port 3000");
+app.listen(PORT, () => {
+  console.log(`🌐 Web server running on port ${PORT}`);
 });
-
-client.on("error", console.error);
-process.on("unhandledRejection", console.error);
