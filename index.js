@@ -10,21 +10,65 @@ const {
 } = require('discord.js');
 const express = require('express');
 
+// =============================
+// Environment Variables
+// =============================
 const TOKEN = process.env.DISCORD_TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
 const PORT = Number(process.env.PORT) || 10000;
 const REGISTER_COMMANDS = process.env.REGISTER_COMMANDS === 'true';
 
+// =============================
+// Boot Logs
+// =============================
 console.log('=== Boot start ===');
 console.log('DISCORD_TOKEN exists?:', !!TOKEN);
 console.log('GUILD_ID exists?:', !!GUILD_ID);
 console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
+console.log('NODE_VERSION:', process.version);
 console.log('PORT:', PORT);
 
+if (!TOKEN) console.error('❌ DISCORD_TOKEN が未設定です');
+if (!GUILD_ID) console.error('❌ GUILD_ID が未設定です');
+
+// =============================
+// Discord Client
+// =============================
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
+// =============================
+// Safe Debug Logs
+// =============================
+// トークンが含まれるログは捨てる
+client.on('debug', (msg) => {
+  if (typeof msg === 'string' && msg.includes('Provided token')) return;
+  console.log('🐞 debug:', msg);
+});
+
+client.on('error', (err) => console.error('❌ Client error:', err));
+client.on('warn', (info) => console.warn('⚠ Warn:', info));
+
+client.on('shardDisconnect', (event, id) => {
+  console.warn(`⚠ shardDisconnect shard=${id} code=${event.code}`);
+});
+
+client.on('shardError', (error, id) => {
+  console.error(`❌ shardError shard=${id}`, error);
+});
+
+client.on('shardReconnecting', (id) => {
+  console.warn(`🔁 shardReconnecting shard=${id}`);
+});
+
+client.on('shardResume', (id, replayed) => {
+  console.log(`✅ shardResume shard=${id} replayed=${replayed}`);
+});
+
+// =============================
+// Express
+// =============================
 const app = express();
 
 app.get('/', (req, res) => {
@@ -38,6 +82,7 @@ app.get('/healthz', (req, res) => {
   res.status(200).json({
     ok: true,
     discord: isDiscordReady ? 'ready' : 'not_ready',
+    wsStatus: client.ws?.status ?? null,
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
@@ -45,6 +90,13 @@ app.get('/healthz', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 Web server running on port ${PORT}`);
+});
+
+// =============================
+// Ready Events
+// =============================
+client.on('ready', () => {
+  console.log('🎉 ready event fired');
 });
 
 client.once(Events.ClientReady, async (readyClient) => {
@@ -71,9 +123,11 @@ client.once(Events.ClientReady, async (readyClient) => {
       new SlashCommandBuilder()
         .setName('ping')
         .setDescription('疎通確認用コマンド'),
+
       new ContextMenuCommandBuilder()
         .setName('Fast Translate')
         .setType(ApplicationCommandType.Message),
+
       new ContextMenuCommandBuilder()
         .setName('Deep Translate')
         .setType(ApplicationCommandType.Message),
@@ -86,39 +140,98 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 });
 
+// =============================
+// Interaction Handler
+// =============================
 client.on(Events.InteractionCreate, async (interaction) => {
+  console.log('🔥 InteractionCreate fired');
+  console.log('type:', interaction.type);
+  console.log('commandName:', interaction.commandName);
+  console.log('user:', interaction.user?.tag);
+
   try {
+    // -----------------------------
+    // Slash Command
+    // -----------------------------
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'ping') {
+        console.log('🏓 /ping received');
+
         await interaction.reply({
           content: 'pong',
           ephemeral: true,
         });
+
+        console.log('✅ /ping reply success');
         return;
       }
-    }
 
-    if (interaction.isMessageContextMenuCommand()) {
       await interaction.reply({
-        content: '受信はできています。',
+        content: '不明なスラッシュコマンドです。',
         ephemeral: true,
       });
       return;
     }
+
+    // -----------------------------
+    // Message Context Menu
+    // -----------------------------
+    if (interaction.isMessageContextMenuCommand()) {
+      console.log('📝 Message context menu received');
+
+      await interaction.reply({
+        content: '受信はできています。',
+        ephemeral: true,
+      });
+
+      console.log('✅ Context menu reply success');
+      return;
+    }
+
+    console.log('ℹ Unsupported interaction type');
   } catch (err) {
     console.error('❌ Interaction error:', err);
   }
 });
 
-client.on('error', (err) => console.error('❌ Client error:', err));
-client.on('warn', (info) => console.warn('⚠ Warn:', info));
+// =============================
+// Timed Status Checks
+// =============================
+setTimeout(() => {
+  console.log('⏰ 20s status check', {
+    ready: typeof client.isReady === 'function' ? client.isReady() : false,
+    wsStatus: client.ws?.status ?? null,
+  });
+}, 20000);
 
+setTimeout(() => {
+  console.log('⏰ 60s status check', {
+    ready: typeof client.isReady === 'function' ? client.isReady() : false,
+    wsStatus: client.ws?.status ?? null,
+  });
+}, 60000);
+
+setInterval(() => {
+  console.log('🩺 heartbeat', {
+    ready: typeof client.isReady === 'function' ? client.isReady() : false,
+    wsStatus: client.ws?.status ?? null,
+    uptime: Math.floor(process.uptime()),
+  });
+}, 30000);
+
+// =============================
+// Process Events
+// =============================
 process.on('unhandledRejection', (reason) => {
   console.error('❌ unhandledRejection:', reason);
 });
 
 process.on('uncaughtException', (err) => {
   console.error('❌ uncaughtException:', err);
+});
+
+process.on('exit', (code) => {
+  console.log(`ℹ process exit code: ${code}`);
 });
 
 process.on('SIGTERM', async () => {
@@ -132,12 +245,17 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
+// =============================
+// Login
+// =============================
 if (!TOKEN) {
   console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
 } else {
   console.log('11. before client.login');
+
   client.login(TOKEN)
     .then(() => console.log('✅ client.login() success'))
     .catch((err) => console.error('❌ client.login() failed:', err));
+
   console.log('12. after client.login call');
 }
