@@ -1,7 +1,5 @@
 require('dotenv').config();
 
-console.log('1. dotenv loaded');
-
 const {
   Client,
   GatewayIntentBits,
@@ -10,44 +8,68 @@ const {
   MessageFlags,
   Events,
 } = require('discord.js');
-console.log('2. discord.js loaded');
-
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-console.log('3. google generative ai loaded');
-
 const translate = require('google-translate-api-next');
-console.log('4. translate package loaded');
-
 const express = require('express');
-console.log('5. express loaded');
 
+// =============================
+// Environment Variables
+// =============================
 const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GUILD_ID = process.env.GUILD_ID;
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
+// コマンド再登録をしたい時だけ true にする
+// Render の Environment に REGISTER_COMMANDS=true を入れた時だけ実行
+const REGISTER_COMMANDS = process.env.REGISTER_COMMANDS === 'true';
+
+// =============================
+// Boot Logs
+// =============================
 console.log('=== Boot start ===');
 console.log('DISCORD_TOKEN exists?:', !!TOKEN);
 console.log('GEMINI_API_KEY exists?:', !!GEMINI_API_KEY);
 console.log('GUILD_ID exists?:', !!GUILD_ID);
+console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
 console.log('PORT:', PORT);
 
-console.log('6. before genAI');
+if (!TOKEN) {
+  console.error('❌ DISCORD_TOKEN が未設定です');
+}
+if (!GEMINI_API_KEY) {
+  console.error('❌ GEMINI_API_KEY が未設定です');
+}
+if (!GUILD_ID) {
+  console.error('❌ GUILD_ID が未設定です');
+}
+
+// =============================
+// Gemini
+// =============================
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-console.log('7. genAI created');
-
 const model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
-console.log('8. model created');
 
-console.log('9. before discord client');
+// =============================
+// Discord Client
+// =============================
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
-console.log('10. discord client created');
 
+// =============================
+// Ready Event
+// =============================
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`✅ Ready as ${readyClient.user.tag}`);
+
+  // 毎回コマンドを再登録すると起動時の負荷になるので、
+  // 必要な時だけ REGISTER_COMMANDS=true にして実行する
+  if (!REGISTER_COMMANDS) {
+    console.log('ℹ Command registration skipped');
+    return;
+  }
 
   try {
     const fastData = new ContextMenuCommandBuilder()
@@ -61,18 +83,21 @@ client.once(Events.ClientReady, async (readyClient) => {
     const guild = client.guilds.cache.get(GUILD_ID);
 
     if (!guild) {
-      console.error('❌ Guild not found. Check GUILD_ID');
+      console.error('❌ Guild not found. GUILD_ID を確認してください');
       return;
     }
 
     console.log(`✅ Guild found: ${guild.name} (${guild.id})`);
     await guild.commands.set([fastData, deepData]);
-    console.log('✅ Commands registered');
+    console.log('✅ Commands registered successfully');
   } catch (err) {
     console.error('❌ Command registration error:', err);
   }
 });
 
+// =============================
+// Interaction Handler
+// =============================
 client.on(Events.InteractionCreate, async (interaction) => {
   console.log('--- Interaction received ---');
   console.log('commandName:', interaction.commandName);
@@ -100,14 +125,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    // =============================
+    // Fast Translate
+    // =============================
     if (interaction.commandName === 'Fast Translate') {
       console.log('⚡ Fast Translate start');
-      const res = await translate(originalText, { to: targetLang });
-      await interaction.editReply(`⚡ **Fast Translate (Google):**\n${res.text}`);
-      console.log('✅ Fast Translate reply success');
-      return;
+
+      try {
+        const res = await translate(originalText, { to: targetLang });
+        await interaction.editReply(`⚡ **Fast Translate (Google):**\n${res.text}`);
+        console.log('✅ Fast Translate reply success');
+        return;
+      } catch (err) {
+        console.error('❌ Fast Translate Error:', err);
+        await interaction.editReply('⚡ Fast Translateでエラーが発生しました。');
+        return;
+      }
     }
 
+    // =============================
+    // Deep Translate
+    // =============================
     if (interaction.commandName === 'Deep Translate') {
       console.log('🧠 Deep Translate start');
 
@@ -123,19 +161,21 @@ Text: ${originalText}`;
           console.log(`🧠 Gemini attempt ${attempts + 1}`);
           const result = await model.generateContent(prompt);
           translatedText = result.response.text();
+          console.log('✅ Gemini translation success');
           break;
         } catch (err) {
           console.error(`❌ Gemini error attempt ${attempts + 1}:`, err);
 
           if (err.status === 429) {
             await interaction.editReply(
-              "⚠️ Gemini APIの利用制限に達した可能性があります。しばらく待つか、'Fast Translate' を使ってください。"
+              "⚠️ You may have exceeded the free tier limit. Please wait a while or use 'Fast Translate' instead.\n\nGemini APIの利用制限に達した可能性があります。しばらく待つか、'Fast Translate' を使ってください。"
             );
             return;
           }
 
           if (err.status === 503 || err.status === 500) {
             attempts++;
+            console.log(`🔁 Retry after 2 seconds... (${attempts}/3)`);
             await new Promise((res) => setTimeout(res, 2000));
           } else {
             throw err;
@@ -160,27 +200,89 @@ Text: ${originalText}`;
   }
 });
 
+// =============================
+// Discord Events
+// =============================
 client.on('error', (err) => console.error('❌ Client error:', err));
 client.on('warn', (info) => console.warn('⚠ Warn:', info));
-client.on('shardDisconnect', (event, id) => console.warn(`⚠ shardDisconnect shard=${id} code=${event.code}`));
-client.on('shardError', (error, id) => console.error(`❌ shardError shard=${id}`, error));
-client.on('shardReconnecting', (id) => console.warn(`🔁 shardReconnecting shard=${id}`));
-client.on('shardResume', (id, replayed) => console.log(`✅ shardResume shard=${id} replayed=${replayed}`));
+client.on('shardDisconnect', (event, id) => {
+  console.warn(`⚠ shardDisconnect shard=${id} code=${event.code}`);
+});
+client.on('shardError', (error, id) => {
+  console.error(`❌ shardError shard=${id}`, error);
+});
+client.on('shardReconnecting', (id) => {
+  console.warn(`🔁 shardReconnecting shard=${id}`);
+});
+client.on('shardResume', (id, replayed) => {
+  console.log(`✅ shardResume shard=${id} replayed=${replayed}`);
+});
 
-process.on('unhandledRejection', (reason) => console.error('❌ unhandledRejection:', reason));
-process.on('uncaughtException', (err) => console.error('❌ uncaughtException:', err));
-process.on('exit', (code) => console.log(`ℹ process exit code: ${code}`));
+// =============================
+// Process Events
+// =============================
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ unhandledRejection:', reason);
+});
 
+process.on('uncaughtException', (err) => {
+  console.error('❌ uncaughtException:', err);
+});
+
+process.on('exit', (code) => {
+  console.log(`ℹ process exit code: ${code}`);
+});
+
+// Render が終了シグナルを送ってきた時に安全に終了
+process.on('SIGTERM', async () => {
+  console.log('⚠ SIGTERM received, shutting down gracefully...');
+  try {
+    client.destroy();
+    console.log('✅ Discord client destroyed');
+  } catch (e) {
+    console.error('❌ Error during client.destroy():', e);
+  }
+  process.exit(0);
+});
+
+// =============================
+// Login
+// =============================
 console.log('11. before client.login');
 client.login(TOKEN)
   .then(() => console.log('✅ client.login() success'))
   .catch((err) => console.error('❌ client.login() failed:', err));
 console.log('12. after client.login call');
 
+// =============================
+// Express
+// =============================
 const app = express();
+
 app.get('/', (req, res) => {
   console.log('🌐 GET /');
   res.send('Bot is running!');
+});
+
+// Render の Health Check 用
+app.get('/healthz', (req, res) => {
+  const isDiscordReady = typeof client.isReady === 'function' ? client.isReady() : false;
+
+  if (isDiscordReady) {
+    return res.status(200).json({
+      ok: true,
+      discord: 'ready',
+      uptimeSeconds: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return res.status(503).json({
+    ok: false,
+    discord: 'not_ready',
+    uptimeSeconds: process.uptime(),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.listen(PORT, () => {
