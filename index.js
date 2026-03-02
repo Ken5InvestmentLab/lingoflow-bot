@@ -35,6 +35,10 @@ client.once(Events.ClientReady, async (readyClient) => {
 });
 
 client.on(Events.InteractionCreate, async interaction => {
+    console.log("✅ Interaction received:", interaction.commandName);
+
+await interaction.deferReply({ ephemeral: true });
+console.log("✅ deferReply OK");
     // コンテキストメニューコマンド以外は無視
     if (!interaction.isMessageContextMenuCommand()) return;
 
