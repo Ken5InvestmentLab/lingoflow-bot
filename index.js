@@ -55,6 +55,28 @@ const client = new Client({
 });
 
 // =============================
+// Extra Debug Logs
+// =============================
+client.on('debug', (msg) => {
+  console.log('🐞 debug:', msg);
+});
+
+client.on('error', (err) => console.error('❌ Client error:', err));
+client.on('warn', (info) => console.warn('⚠ Warn:', info));
+client.on('shardDisconnect', (event, id) => {
+  console.warn(`⚠ shardDisconnect shard=${id} code=${event.code}`);
+});
+client.on('shardError', (error, id) => {
+  console.error(`❌ shardError shard=${id}`, error);
+});
+client.on('shardReconnecting', (id) => {
+  console.warn(`🔁 shardReconnecting shard=${id}`);
+});
+client.on('shardResume', (id, replayed) => {
+  console.log(`✅ shardResume shard=${id} replayed=${replayed}`);
+});
+
+// =============================
 // Express
 // =============================
 const app = express();
@@ -79,6 +101,35 @@ app.get('/healthz', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 Web server running on port ${PORT}`);
 });
+
+// =============================
+// REST Debug
+// =============================
+async function debugDiscordRest() {
+  try {
+    console.log('🔍 REST test start');
+
+    const meRes = await fetch('https://discord.com/api/v10/users/@me', {
+      headers: {
+        Authorization: `Bot ${TOKEN}`,
+      },
+    });
+
+    console.log('🔍 /users/@me status:', meRes.status);
+    console.log('🔍 /users/@me body:', await meRes.text());
+
+    const gwBotRes = await fetch('https://discord.com/api/v10/gateway/bot', {
+      headers: {
+        Authorization: `Bot ${TOKEN}`,
+      },
+    });
+
+    console.log('🔍 /gateway/bot status:', gwBotRes.status);
+    console.log('🔍 /gateway/bot body:', await gwBotRes.text());
+  } catch (err) {
+    console.error('❌ REST test error:', err);
+  }
+}
 
 // =============================
 // Ready Event
@@ -133,15 +184,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   try {
     // -----------------------------
-    // Slash Command: /ping
+    // Slash Command
     // -----------------------------
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'ping') {
         console.log('🏓 /ping received');
+
         await interaction.reply({
           content: 'pong',
           ephemeral: true,
         });
+
         console.log('✅ /ping reply success');
         return;
       }
@@ -154,7 +207,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     // -----------------------------
-    // Context Menu only
+    // Message Context Menu
     // -----------------------------
     if (!interaction.isMessageContextMenuCommand()) {
       console.log('ℹ Not a message context menu command');
@@ -292,24 +345,6 @@ Text: ${originalText}`;
 });
 
 // =============================
-// Discord Events
-// =============================
-client.on('error', (err) => console.error('❌ Client error:', err));
-client.on('warn', (info) => console.warn('⚠ Warn:', info));
-client.on('shardDisconnect', (event, id) => {
-  console.warn(`⚠ shardDisconnect shard=${id} code=${event.code}`);
-});
-client.on('shardError', (error, id) => {
-  console.error(`❌ shardError shard=${id}`, error);
-});
-client.on('shardReconnecting', (id) => {
-  console.warn(`🔁 shardReconnecting shard=${id}`);
-});
-client.on('shardResume', (id, replayed) => {
-  console.log(`✅ shardResume shard=${id} replayed=${replayed}`);
-});
-
-// =============================
 // Heartbeat Logs
 // =============================
 setInterval(() => {
@@ -352,9 +387,13 @@ process.on('SIGTERM', async () => {
 if (!TOKEN) {
   console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
 } else {
-  console.log('11. before client.login');
-  client.login(TOKEN)
-    .then(() => console.log('✅ client.login() success'))
-    .catch((err) => console.error('❌ client.login() failed:', err));
-  console.log('12. after client.login call');
+  (async () => {
+    await debugDiscordRest();
+
+    console.log('11. before client.login');
+    client.login(TOKEN)
+      .then(() => console.log('✅ client.login() success'))
+      .catch((err) => console.error('❌ client.login() failed:', err));
+    console.log('12. after client.login call');
+  })();
 }
