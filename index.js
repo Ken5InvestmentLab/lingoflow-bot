@@ -1,5 +1,7 @@
 require('dotenv').config();
 
+console.log('1. dotenv loaded');
+
 const {
   Client,
   GatewayIntentBits,
@@ -8,9 +10,16 @@ const {
   MessageFlags,
   Events,
 } = require('discord.js');
+console.log('2. discord.js loaded');
+
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+console.log('3. google generative ai loaded');
+
 const translate = require('google-translate-api-next');
+console.log('4. translate package loaded');
+
 const express = require('express');
+console.log('5. express loaded');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -24,12 +33,18 @@ console.log('GUILD_ID exists?:', !!GUILD_ID);
 console.log('NODE_VERSION:', process.version);
 console.log('PORT:', PORT);
 
+console.log('6. before genAI');
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
+console.log('7. genAI created');
 
+const model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
+console.log('8. model created');
+
+console.log('9. before discord client');
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
+console.log('10. discord client created');
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`✅ Ready as ${readyClient.user.tag}`);
@@ -156,9 +171,11 @@ process.on('unhandledRejection', (reason) => console.error('❌ unhandledRejecti
 process.on('uncaughtException', (err) => console.error('❌ uncaughtException:', err));
 process.on('exit', (code) => console.log(`ℹ process exit code: ${code}`));
 
+console.log('11. before client.login');
 client.login(TOKEN)
   .then(() => console.log('✅ client.login() success'))
   .catch((err) => console.error('❌ client.login() failed:', err));
+console.log('12. after client.login call');
 
 const app = express();
 app.get('/', (req, res) => {
