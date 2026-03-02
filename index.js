@@ -1,19 +1,6 @@
 require('dotenv').config();
 
-// =============================
-// Force ws package instead of built-in WebSocket
-// =============================
-const WS = require('ws');
-globalThis.WebSocket = WS;
-
-const {
-  Client,
-  GatewayIntentBits,
-  ContextMenuCommandBuilder,
-  ApplicationCommandType,
-  Events,
-  SlashCommandBuilder,
-} = require('discord.js');
+const Eris = require('eris');
 const express = require('express');
 
 // =============================
@@ -32,54 +19,10 @@ console.log('DISCORD_TOKEN exists?:', !!TOKEN);
 console.log('GUILD_ID exists?:', !!GUILD_ID);
 console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
-console.log('discord.js version:', require('discord.js').version);
-console.log('Forced WebSocket package:', typeof globalThis.WebSocket);
 console.log('PORT:', PORT);
 
 if (!TOKEN) console.error('❌ DISCORD_TOKEN が未設定です');
 if (!GUILD_ID) console.error('❌ GUILD_ID が未設定です');
-
-// =============================
-// Discord Client
-// =============================
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
-});
-
-// =============================
-// Safe Debug Logs
-// =============================
-client.on('debug', (msg) => {
-  if (typeof msg === 'string' && msg.includes('Provided token')) return;
-  console.log('🐞 debug:', msg);
-});
-
-client.on('error', (err) => console.error('❌ Client error:', err));
-client.on('warn', (info) => console.warn('⚠ Warn:', info));
-
-client.on('invalidated', () => {
-  console.error('❌ invalidated event fired');
-});
-
-client.on('shardDisconnect', (event, id) => {
-  console.warn(`⚠ shardDisconnect shard=${id} code=${event.code}`);
-});
-
-client.on('shardError', (error, id) => {
-  console.error(`❌ shardError shard=${id}`, error);
-});
-
-client.on('shardReady', (id, unavailableGuilds) => {
-  console.log(`✅ shardReady shard=${id} unavailableGuilds=${unavailableGuilds?.size ?? 0}`);
-});
-
-client.on('shardReconnecting', (id) => {
-  console.warn(`🔁 shardReconnecting shard=${id}`);
-});
-
-client.on('shardResume', (id, replayed) => {
-  console.log(`✅ shardResume shard=${id} replayed=${replayed}`);
-});
 
 // =============================
 // Express
@@ -91,13 +34,9 @@ app.get('/', (req, res) => {
 });
 
 app.get('/healthz', (req, res) => {
-  const isDiscordReady =
-    typeof client.isReady === 'function' ? client.isReady() : false;
-
   res.status(200).json({
     ok: true,
-    discord: isDiscordReady ? 'ready' : 'not_ready',
-    wsStatus: client.ws?.status ?? null,
+    ready: !!bot.ready,
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
@@ -108,16 +47,50 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 
 // =============================
-// Ready Events
+// Eris Client
 // =============================
-client.on('ready', () => {
-  console.log('🎉 ready event fired');
+const bot = new Eris(TOKEN, {
+  intents: ["guilds"],
+  autoreconnect: true,
+  maxShards: 1,
+  restMode: true,
 });
 
-client.once(Events.ClientReady, async (readyClient) => {
-  console.log(`✅ Ready as ${readyClient.user.tag}`);
-  console.log(`✅ Bot user id: ${readyClient.user.id}`);
-  console.log(`✅ Guild count: ${readyClient.guilds.cache.size}`);
+// =============================
+// Logging
+// =============================
+bot.on('error', (err) => {
+  console.error('❌ bot error:', err);
+});
+
+bot.on('warn', (msg) => {
+  console.warn('⚠ warn:', msg);
+});
+
+bot.on('debug', (msg) => {
+  if (typeof msg === 'string' && msg.includes('token')) return;
+  console.log('🐞 debug:', msg);
+});
+
+bot.on('disconnect', (err) => {
+  console.warn('⚠ disconnect:', err);
+});
+
+bot.on('reconnecting', (attempt) => {
+  console.warn('🔁 reconnecting, attempt:', attempt);
+});
+
+bot.on('resume', () => {
+  console.log('✅ session resumed');
+});
+
+// =============================
+// Ready
+// =============================
+bot.on('ready', async () => {
+  console.log('🎉 ready event fired');
+  console.log(`✅ Ready as ${bot.user.username}#${bot.user.discriminator}`);
+  console.log(`✅ Bot user id: ${bot.user.id}`);
 
   if (!REGISTER_COMMANDS) {
     console.log('ℹ Command registration skipped');
@@ -125,30 +98,23 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 
   try {
-    const guild = client.guilds.cache.get(GUILD_ID);
-
-    if (!guild) {
-      console.error('❌ Guild not found. GUILD_ID を確認してください');
-      return;
-    }
-
-    console.log(`✅ Guild found: ${guild.name} (${guild.id})`);
-
     const commands = [
-      new SlashCommandBuilder()
-        .setName('ping')
-        .setDescription('疎通確認用コマンド'),
-
-      new ContextMenuCommandBuilder()
-        .setName('Fast Translate')
-        .setType(ApplicationCommandType.Message),
-
-      new ContextMenuCommandBuilder()
-        .setName('Deep Translate')
-        .setType(ApplicationCommandType.Message),
+      {
+        name: 'ping',
+        description: '疎通確認用コマンド',
+        type: 1
+      },
+      {
+        name: 'Fast Translate',
+        type: 3
+      },
+      {
+        name: 'Deep Translate',
+        type: 3
+      }
     ];
 
-    await guild.commands.set(commands);
+    await bot.bulkEditGuildCommands(GUILD_ID, commands);
     console.log('✅ Commands registered successfully');
   } catch (err) {
     console.error('❌ Command registration error:', err);
@@ -158,83 +124,77 @@ client.once(Events.ClientReady, async (readyClient) => {
 // =============================
 // Interaction Handler
 // =============================
-client.on(Events.InteractionCreate, async (interaction) => {
-  console.log('🔥 InteractionCreate fired');
-  console.log('type:', interaction.type);
-  console.log('commandName:', interaction.commandName);
-  console.log('user:', interaction.user?.tag);
-
+bot.on('interactionCreate', async (interaction) => {
   try {
-    if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === 'ping') {
-        await interaction.reply({
-          content: 'pong',
-          ephemeral: true,
-        });
-        console.log('✅ /ping reply success');
-        return;
-      }
+    console.log('🔥 interactionCreate fired');
+    console.log('type:', interaction.type);
+    console.log('name:', interaction.data?.name);
+    console.log('user:', interaction.member?.user?.username || interaction.user?.username);
 
-      await interaction.reply({
-        content: '不明なスラッシュコマンドです。',
-        ephemeral: true,
+    // Slash command
+    if (interaction.data?.type === 1 && interaction.data?.name === 'ping') {
+      await interaction.createMessage({
+        content: 'pong',
+        flags: 64
       });
+      console.log('✅ /ping reply success');
       return;
     }
 
-    if (interaction.isMessageContextMenuCommand()) {
-      await interaction.reply({
+    // Message context menu
+    if (interaction.data?.type === 3) {
+      await interaction.createMessage({
         content: '受信はできています。',
-        ephemeral: true,
+        flags: 64
       });
       console.log('✅ Context menu reply success');
       return;
     }
 
-    console.log('ℹ Unsupported interaction type');
+    await interaction.createMessage({
+      content: '未対応のコマンドです。',
+      flags: 64
+    });
   } catch (err) {
-    console.error('❌ Interaction error:', err);
+    console.error('❌ interaction error:', err);
+    try {
+      await interaction.createMessage({
+        content: 'エラーが発生しました。',
+        flags: 64
+      });
+    } catch (_) {}
   }
 });
 
 // =============================
 // Timed Status Checks
 // =============================
-let loginSettled = false;
-
 setTimeout(() => {
   console.log('⏰ 10s status check', {
-    ready: typeof client.isReady === 'function' ? client.isReady() : false,
-    wsStatus: client.ws?.status ?? null,
+    ready: !!bot.ready,
+    uptime: Math.floor(process.uptime()),
   });
 }, 10000);
 
 setTimeout(() => {
   console.log('⏰ 20s status check', {
-    ready: typeof client.isReady === 'function' ? client.isReady() : false,
-    wsStatus: client.ws?.status ?? null,
+    ready: !!bot.ready,
+    uptime: Math.floor(process.uptime()),
   });
 }, 20000);
 
 setTimeout(() => {
   console.log('⏰ 60s status check', {
-    ready: typeof client.isReady === 'function' ? client.isReady() : false,
-    wsStatus: client.ws?.status ?? null,
+    ready: !!bot.ready,
+    uptime: Math.floor(process.uptime()),
   });
 }, 60000);
 
 setInterval(() => {
   console.log('🩺 heartbeat', {
-    ready: typeof client.isReady === 'function' ? client.isReady() : false,
-    wsStatus: client.ws?.status ?? null,
+    ready: !!bot.ready,
     uptime: Math.floor(process.uptime()),
   });
-}, 30000);
-
-setTimeout(() => {
-  if (!loginSettled) {
-    console.error('⛔ login promise still pending after 30s');
-  }
 }, 30000);
 
 // =============================
@@ -248,38 +208,24 @@ process.on('uncaughtException', (err) => {
   console.error('❌ uncaughtException:', err);
 });
 
-process.on('exit', (code) => {
-  console.log(`ℹ process exit code: ${code}`);
-});
-
-process.on('SIGTERM', async () => {
+process.on('SIGTERM', () => {
   console.log('⚠ SIGTERM received, shutting down gracefully...');
   try {
-    client.destroy();
-    console.log('✅ Discord client destroyed');
+    bot.disconnect({ reconnect: false });
+    console.log('✅ Bot disconnected');
   } catch (e) {
-    console.error('❌ Error during client.destroy():', e);
+    console.error('❌ disconnect error:', e);
   }
   process.exit(0);
 });
 
 // =============================
-// Login
+// Connect
 // =============================
 if (!TOKEN) {
-  console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
+  console.error('❌ DISCORD_TOKEN がないため Discord に接続できません');
 } else {
-  console.log('11. before client.login');
-
-  client.login(TOKEN)
-    .then(() => {
-      loginSettled = true;
-      console.log('✅ client.login() success');
-    })
-    .catch((err) => {
-      loginSettled = true;
-      console.error('❌ client.login() failed:', err);
-    });
-
-  console.log('12. after client.login call');
+  console.log('11. before bot.connect');
+  bot.connect();
+  console.log('12. after bot.connect call');
 }
