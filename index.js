@@ -41,7 +41,6 @@ const client = new Client({
 // =============================
 // Safe Debug Logs
 // =============================
-// トークンが含まれるログは捨てる
 client.on('debug', (msg) => {
   if (typeof msg === 'string' && msg.includes('Provided token')) return;
   console.log('🐞 debug:', msg);
@@ -50,12 +49,20 @@ client.on('debug', (msg) => {
 client.on('error', (err) => console.error('❌ Client error:', err));
 client.on('warn', (info) => console.warn('⚠ Warn:', info));
 
+client.on('invalidated', () => {
+  console.error('❌ invalidated event fired');
+});
+
 client.on('shardDisconnect', (event, id) => {
   console.warn(`⚠ shardDisconnect shard=${id} code=${event.code}`);
 });
 
 client.on('shardError', (error, id) => {
   console.error(`❌ shardError shard=${id}`, error);
+});
+
+client.on('shardReady', (id, unavailableGuilds) => {
+  console.log(`✅ shardReady shard=${id} unavailableGuilds=${unavailableGuilds?.size ?? 0}`);
 });
 
 client.on('shardReconnecting', (id) => {
@@ -150,9 +157,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   console.log('user:', interaction.user?.tag);
 
   try {
-    // -----------------------------
-    // Slash Command
-    // -----------------------------
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'ping') {
         console.log('🏓 /ping received');
@@ -173,9 +177,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    // -----------------------------
-    // Message Context Menu
-    // -----------------------------
     if (interaction.isMessageContextMenuCommand()) {
       console.log('📝 Message context menu received');
 
@@ -197,6 +198,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // =============================
 // Timed Status Checks
 // =============================
+setTimeout(() => {
+  console.log('⏰ 10s status check', {
+    ready: typeof client.isReady === 'function' ? client.isReady() : false,
+    wsStatus: client.ws?.status ?? null,
+  });
+}, 10000);
+
 setTimeout(() => {
   console.log('⏰ 20s status check', {
     ready: typeof client.isReady === 'function' ? client.isReady() : false,
@@ -246,16 +254,30 @@ process.on('SIGTERM', async () => {
 });
 
 // =============================
-// Login
+// Login watchdog
 // =============================
+let loginSettled = false;
+
 if (!TOKEN) {
   console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
 } else {
   console.log('11. before client.login');
 
   client.login(TOKEN)
-    .then(() => console.log('✅ client.login() success'))
-    .catch((err) => console.error('❌ client.login() failed:', err));
+    .then(() => {
+      loginSettled = true;
+      console.log('✅ client.login() success');
+    })
+    .catch((err) => {
+      loginSettled = true;
+      console.error('❌ client.login() failed:', err);
+    });
 
   console.log('12. after client.login call');
 }
+
+setTimeout(() => {
+  if (!loginSettled) {
+    console.error('⛔ login promise still pending after 30s');
+  }
+}, 30000);
