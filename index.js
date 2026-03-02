@@ -5,8 +5,8 @@ const {
   GatewayIntentBits,
   ContextMenuCommandBuilder,
   ApplicationCommandType,
-  MessageFlags,
   Events,
+  SlashCommandBuilder,
 } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const translate = require('google-translate-api-next');
@@ -19,9 +19,6 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GUILD_ID = process.env.GUILD_ID;
 const PORT = Number(process.env.PORT) || 10000;
-
-// コマンド再登録をしたい時だけ true にする
-// Render の Environment に REGISTER_COMMANDS=true を入れた時だけ実行
 const REGISTER_COMMANDS = process.env.REGISTER_COMMANDS === 'true';
 
 // =============================
@@ -35,15 +32,9 @@ console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
 console.log('PORT:', PORT);
 
-if (!TOKEN) {
-  console.error('❌ DISCORD_TOKEN が未設定です');
-}
-if (!GEMINI_API_KEY) {
-  console.error('❌ GEMINI_API_KEY が未設定です');
-}
-if (!GUILD_ID) {
-  console.error('❌ GUILD_ID が未設定です');
-}
+if (!TOKEN) console.error('❌ DISCORD_TOKEN が未設定です');
+if (!GEMINI_API_KEY) console.warn('⚠ GEMINI_API_KEY が未設定です（Deep Translate は使えません）');
+if (!GUILD_ID) console.error('❌ GUILD_ID が未設定です');
 
 // =============================
 // Gemini
@@ -54,8 +45,6 @@ let model = null;
 if (GEMINI_API_KEY) {
   genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
   model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
-} else {
-  console.warn('⚠ GEMINI_API_KEY が無いため Deep Translate は利用できません');
 }
 
 // =============================
@@ -67,7 +56,6 @@ const client = new Client({
 
 // =============================
 // Express
-// Render 対策として最優先で起動
 // =============================
 const app = express();
 
@@ -75,8 +63,6 @@ app.get('/', (req, res) => {
   res.status(200).send('Bot is running!');
 });
 
-// 起動判定用: 常に 200 を返す
-// Discord の状態は JSON 内で確認できるようにする
 app.get('/healthz', (req, res) => {
   const isDiscordReady =
     typeof client.isReady === 'function' ? client.isReady() : false;
@@ -85,6 +71,7 @@ app.get('/healthz', (req, res) => {
     ok: true,
     discord: isDiscordReady ? 'ready' : 'not_ready',
     uptimeSeconds: Math.floor(process.uptime()),
+    wsStatus: client.ws?.status ?? null,
     timestamp: new Date().toISOString(),
   });
 });
@@ -98,23 +85,15 @@ app.listen(PORT, '0.0.0.0', () => {
 // =============================
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`✅ Ready as ${readyClient.user.tag}`);
+  console.log(`✅ Bot user id: ${readyClient.user.id}`);
+  console.log(`✅ Guild count: ${readyClient.guilds.cache.size}`);
 
-  // 毎回コマンドを再登録すると起動時の負荷になるので、
-  // 必要な時だけ REGISTER_COMMANDS=true にして実行する
   if (!REGISTER_COMMANDS) {
     console.log('ℹ Command registration skipped');
     return;
   }
 
   try {
-    const fastData = new ContextMenuCommandBuilder()
-      .setName('Fast Translate')
-      .setType(ApplicationCommandType.Message);
-
-    const deepData = new ContextMenuCommandBuilder()
-      .setName('Deep Translate')
-      .setType(ApplicationCommandType.Message);
-
     const guild = client.guilds.cache.get(GUILD_ID);
 
     if (!guild) {
@@ -123,7 +102,20 @@ client.once(Events.ClientReady, async (readyClient) => {
     }
 
     console.log(`✅ Guild found: ${guild.name} (${guild.id})`);
-    await guild.commands.set([fastData, deepData]);
+
+    const commands = [
+      new SlashCommandBuilder()
+        .setName('ping')
+        .setDescription('疎通確認用コマンド'),
+      new ContextMenuCommandBuilder()
+        .setName('Fast Translate')
+        .setType(ApplicationCommandType.Message),
+      new ContextMenuCommandBuilder()
+        .setName('Deep Translate')
+        .setType(ApplicationCommandType.Message),
+    ];
+
+    await guild.commands.set(commands);
     console.log('✅ Commands registered successfully');
   } catch (err) {
     console.error('❌ Command registration error:', err);
@@ -134,27 +126,59 @@ client.once(Events.ClientReady, async (readyClient) => {
 // Interaction Handler
 // =============================
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isMessageContextMenuCommand()) return;
-  if (interaction.replied || interaction.deferred) return;
-
-  console.log('--- Interaction received ---');
+  console.log('🔥 InteractionCreate fired');
+  console.log('type:', interaction.type);
   console.log('commandName:', interaction.commandName);
   console.log('user:', interaction.user?.tag);
-  console.log('locale:', interaction.locale);
 
   try {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  } catch (e) {
-    console.error('❌ deferReply failed:', e);
-    return;
-  }
+    // -----------------------------
+    // Slash Command: /ping
+    // -----------------------------
+    if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'ping') {
+        console.log('🏓 /ping received');
+        await interaction.reply({
+          content: 'pong',
+          ephemeral: true,
+        });
+        console.log('✅ /ping reply success');
+        return;
+      }
 
-  try {
+      await interaction.reply({
+        content: '不明なスラッシュコマンドです。',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // -----------------------------
+    // Context Menu only
+    // -----------------------------
+    if (!interaction.isMessageContextMenuCommand()) {
+      console.log('ℹ Not a message context menu command');
+      return;
+    }
+
+    if (interaction.replied || interaction.deferred) {
+      console.log('ℹ Already replied or deferred');
+      return;
+    }
+
+    console.log('--- Message Context Menu received ---');
+    console.log('commandName:', interaction.commandName);
+    console.log('locale:', interaction.locale);
+
+    await interaction.deferReply({ ephemeral: true });
+    console.log('✅ deferReply success');
+
     const originalText = interaction.targetMessage?.content;
     const targetLang = (interaction.locale || 'ja').split('-')[0];
 
     if (!originalText || !originalText.trim()) {
       await interaction.editReply('翻訳するテキストがありません。');
+      console.log('ℹ No text to translate');
       return;
     }
 
@@ -163,15 +187,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // =============================
     if (interaction.commandName === 'Fast Translate') {
       console.log('⚡ Fast Translate start');
+      console.log('targetLang:', targetLang);
+      console.log('originalText:', originalText);
 
       try {
         const res = await translate(originalText, { to: targetLang });
-        await interaction.editReply(`⚡ **Fast Translate (Google):**\n${res.text}`);
+        console.log('✅ Fast Translate API success');
+
+        await interaction.editReply(
+          `⚡ **Fast Translate (Google):**\n${res.text}`
+        );
         console.log('✅ Fast Translate reply success');
         return;
       } catch (err) {
         console.error('❌ Fast Translate Error:', err);
-        await interaction.editReply('⚡ Fast Translateでエラーが発生しました。');
+
+        await interaction.editReply(
+          `⚡ Fast Translateでエラーが発生しました。\n\`\`\`\n${String(err?.message || err)}\n\`\`\``
+        );
         return;
       }
     }
@@ -181,6 +214,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // =============================
     if (interaction.commandName === 'Deep Translate') {
       console.log('🧠 Deep Translate start');
+      console.log('targetLang:', targetLang);
+      console.log('originalText:', originalText);
 
       if (!model) {
         await interaction.editReply(
@@ -230,15 +265,29 @@ Text: ${originalText}`;
         return;
       }
 
-      await interaction.editReply(`🧠 **Deep Translate (Gemini):**\n${translatedText}`);
+      await interaction.editReply(
+        `🧠 **Deep Translate (Gemini):**\n${translatedText}`
+      );
       console.log('✅ Deep Translate reply success');
       return;
     }
 
-    await interaction.editReply('不明なコマンドです。');
+    await interaction.editReply('不明なコンテキストメニューコマンドです。');
   } catch (error) {
     console.error('🔥 Interaction error:', error);
-    await interaction.editReply('翻訳処理中に予期せぬエラーが発生しました。').catch(() => {});
+
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply('翻訳処理中に予期せぬエラーが発生しました。');
+      } else {
+        await interaction.reply({
+          content: '翻訳処理中に予期せぬエラーが発生しました。',
+          ephemeral: true,
+        });
+      }
+    } catch (replyErr) {
+      console.error('❌ Error while sending error reply:', replyErr);
+    }
   }
 });
 
@@ -261,6 +310,17 @@ client.on('shardResume', (id, replayed) => {
 });
 
 // =============================
+// Heartbeat Logs
+// =============================
+setInterval(() => {
+  console.log('🩺 heartbeat', {
+    ready: typeof client.isReady === 'function' ? client.isReady() : false,
+    wsStatus: client.ws?.status ?? null,
+    uptime: Math.floor(process.uptime()),
+  });
+}, 30000);
+
+// =============================
 // Process Events
 // =============================
 process.on('unhandledRejection', (reason) => {
@@ -275,7 +335,6 @@ process.on('exit', (code) => {
   console.log(`ℹ process exit code: ${code}`);
 });
 
-// Render が終了シグナルを送ってきた時に安全に終了
 process.on('SIGTERM', async () => {
   console.log('⚠ SIGTERM received, shutting down gracefully...');
   try {
@@ -289,7 +348,6 @@ process.on('SIGTERM', async () => {
 
 // =============================
 // Login
-// Express 起動後に Discord ログイン
 // =============================
 if (!TOKEN) {
   console.error('❌ DISCORD_TOKEN がないため Discord にログインできません');
