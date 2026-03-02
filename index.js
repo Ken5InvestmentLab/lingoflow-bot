@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { Client, GatewayIntentBits, ContextMenuCommandBuilder, ApplicationCommandType, MessageFlags, Events } = require('discord.js');
+const { Client, GatewayIntentBits, ContextMenuCommandBuilder, ApplicationCommandType, Events } = require('discord.js');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const translate = require('google-translate-api-next');
 
