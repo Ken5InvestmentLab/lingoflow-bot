@@ -1,11 +1,11 @@
 {
   "name": "lingoflow-bot",
   "version": "1.0.0",
-  "description": "Discord translation bot",
+  "description": "Discord translation bot for Render",
   "main": "index.js",
   "type": "commonjs",
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "scripts": {
     "start": "node index.js"
