@@ -2,11 +2,14 @@ require('dotenv').config();
 
 const Eris = require('eris');
 const express = require('express');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const translate = require('google-translate-api-next');
 
 // =============================
 // Environment Variables
 // =============================
 const TOKEN = process.env.DISCORD_TOKEN;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GUILD_ID = process.env.GUILD_ID;
 const PORT = Number(process.env.PORT) || 10000;
 const REGISTER_COMMANDS = process.env.REGISTER_COMMANDS === 'true';
@@ -16,13 +19,31 @@ const REGISTER_COMMANDS = process.env.REGISTER_COMMANDS === 'true';
 // =============================
 console.log('=== Boot start ===');
 console.log('DISCORD_TOKEN exists?:', !!TOKEN);
+console.log('GEMINI_API_KEY exists?:', !!GEMINI_API_KEY);
 console.log('GUILD_ID exists?:', !!GUILD_ID);
 console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
 console.log('PORT:', PORT);
 
-if (!TOKEN) console.error('❌ DISCORD_TOKEN が未設定です');
-if (!GUILD_ID) console.error('❌ GUILD_ID が未設定です');
+if (!TOKEN) {
+  console.error('❌ DISCORD_TOKEN が未設定です');
+}
+if (!GEMINI_API_KEY) {
+  console.warn('⚠ GEMINI_API_KEY が未設定です（Deep Translate は使えません）');
+}
+if (!GUILD_ID) {
+  console.error('❌ GUILD_ID が未設定です');
+}
+
+// =============================
+// Gemini
+// =============================
+let model = null;
+
+if (GEMINI_API_KEY) {
+  const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
+}
 
 // =============================
 // Express
@@ -51,10 +72,9 @@ app.listen(PORT, '0.0.0.0', () => {
 // =============================
 // Eris Client
 // =============================
-// トラブル再発時に暴れにくいよう、最初は autoreconnect を false
 const bot = new Eris(TOKEN, {
   intents: ['guilds'],
-  autoreconnect: false,
+  autoreconnect: true,
   maxShards: 1,
   restMode: true,
 });
@@ -72,6 +92,10 @@ bot.on('warn', (msg) => {
 
 bot.on('disconnect', (err) => {
   console.warn('⚠ disconnect:', err);
+});
+
+bot.on('reconnecting', (attempt) => {
+  console.warn('🔁 reconnecting, attempt:', attempt);
 });
 
 bot.on('resume', () => {
@@ -117,6 +141,39 @@ bot.on('ready', async () => {
 });
 
 // =============================
+// Helper
+// =============================
+function getTargetMessageFromInteraction(interaction) {
+  const targetId = interaction?.data?.target_id;
+  const resolved = interaction?.data?.resolved;
+
+  if (!targetId || !resolved) {
+    return null;
+  }
+
+  const messages = resolved.messages;
+
+  if (messages && typeof messages === 'object' && messages[targetId]) {
+    return messages[targetId];
+  }
+
+  if (messages && typeof messages.get === 'function') {
+    const msg = messages.get(targetId);
+    if (msg) return msg;
+  }
+
+  if (messages && typeof messages === 'object') {
+    for (const [key, value] of Object.entries(messages)) {
+      if (String(key) === String(targetId)) {
+        return value;
+      }
+    }
+  }
+
+  return null;
+}
+
+// =============================
 // Interaction Handler
 // =============================
 bot.on('interactionCreate', async (interaction) => {
@@ -125,6 +182,7 @@ bot.on('interactionCreate', async (interaction) => {
     console.log('type:', interaction.type);
     console.log('name:', interaction.data?.name);
 
+    // Slash command
     if (interaction.data?.type === 1 && interaction.data?.name === 'ping') {
       await interaction.createMessage({
         content: 'pong',
@@ -134,21 +192,110 @@ bot.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.data?.type === 3) {
+    // Message context menu only
+    if (interaction.data?.type !== 3) {
       await interaction.createMessage({
-        content: '受信はできています。',
+        content: '未対応のコマンドです。',
         flags: 64
       });
-      console.log('✅ Context menu reply success');
       return;
     }
 
-    await interaction.createMessage({
-      content: '未対応のコマンドです。',
-      flags: 64
+    const targetMessage = getTargetMessageFromInteraction(interaction);
+
+    console.log('target_id:', interaction.data?.target_id);
+    console.log('resolved message found?:', !!targetMessage);
+    console.log(
+      'resolved message keys:',
+      Object.keys(interaction.data?.resolved?.messages || {})
+    );
+
+    const originalText = targetMessage?.content || '';
+    const locale = interaction.locale || 'ja';
+    const targetLang = locale.split('-')[0];
+
+    console.log('originalText:', originalText);
+
+    if (!originalText.trim()) {
+      await interaction.createMessage({
+        content: '翻訳するテキストがありません。',
+        flags: 64
+      });
+      return;
+    }
+
+    await interaction.defer(64);
+
+    // =============================
+    // Fast Translate
+    // =============================
+    if (interaction.data.name === 'Fast Translate') {
+      try {
+        const res = await translate(originalText, { to: targetLang });
+
+        await interaction.editOriginalMessage({
+          content: `⚡ **Fast Translate (Google):**\n${res.text}`
+        });
+
+        console.log('✅ Fast Translate reply success');
+        return;
+      } catch (err) {
+        console.error('❌ Fast Translate Error:', err);
+
+        await interaction.editOriginalMessage({
+          content: '⚡ Fast Translateでエラーが発生しました。'
+        });
+        return;
+      }
+    }
+
+    // =============================
+    // Deep Translate
+    // =============================
+    if (interaction.data.name === 'Deep Translate') {
+      if (!model) {
+        await interaction.editOriginalMessage({
+          content: '🧠 GEMINI_API_KEY が未設定のため、Deep Translate は利用できません。'
+        });
+        return;
+      }
+
+      try {
+        const prompt = `Translate the following text into the language of code "${targetLang}".
+Context: Online chat. Deliver only the translated text.
+Text: ${originalText}`;
+
+        const result = await model.generateContent(prompt);
+        const translatedText = result.response.text();
+
+        await interaction.editOriginalMessage({
+          content: `🧠 **Deep Translate (Gemini):**\n${translatedText}`
+        });
+
+        console.log('✅ Deep Translate reply success');
+        return;
+      } catch (err) {
+        console.error('❌ Deep Translate Error:', err);
+
+        await interaction.editOriginalMessage({
+          content: '🧠 Deep Translateでエラーが発生しました。'
+        });
+        return;
+      }
+    }
+
+    await interaction.editOriginalMessage({
+      content: '未対応のコマンドです。'
     });
   } catch (err) {
     console.error('❌ interaction error:', err);
+
+    try {
+      await interaction.createMessage({
+        content: 'エラーが発生しました。',
+        flags: 64
+      });
+    } catch (_) {}
   }
 });
 
