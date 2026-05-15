@@ -25,21 +25,10 @@ console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
 console.log('PORT:', PORT);
 
-if (!TOKEN) {
-  console.error('❌ DISCORD_TOKEN が未設定です');
-}
-if (!GEMINI_API_KEY) {
-  console.warn('⚠ GEMINI_API_KEY が未設定です（Deep Translate は使えません）');
-}
-if (!GUILD_ID) {
-  console.error('❌ GUILD_ID が未設定です');
-}
-
 // =============================
 // Gemini
 // =============================
 let model = null;
-
 if (GEMINI_API_KEY) {
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
   model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
@@ -82,25 +71,11 @@ const bot = new Eris(TOKEN, {
 // =============================
 // Logging
 // =============================
-bot.on('error', (err) => {
-  console.error('❌ bot error:', err);
-});
-
-bot.on('warn', (msg) => {
-  console.warn('⚠ warn:', msg);
-});
-
-bot.on('disconnect', (err) => {
-  console.warn('⚠ disconnect:', err);
-});
-
-bot.on('reconnecting', (attempt) => {
-  console.warn('🔁 reconnecting, attempt:', attempt);
-});
-
-bot.on('resume', () => {
-  console.log('✅ session resumed');
-});
+bot.on('error', (err) => console.error('❌ bot error:', err));
+bot.on('warn', (msg) => console.warn('⚠ warn:', msg));
+bot.on('disconnect', (err) => console.warn('⚠ disconnect:', err));
+bot.on('reconnecting', (attempt) => console.warn('🔁 reconnecting, attempt:', attempt));
+bot.on('resume', () => console.log('✅ session resumed'));
 
 // =============================
 // Ready
@@ -109,7 +84,6 @@ bot.on('ready', async () => {
   botReady = true;
   console.log('🎉 ready event fired');
   console.log(`✅ Ready as ${bot.user.username}#${bot.user.discriminator}`);
-  console.log(`✅ Bot user id: ${bot.user.id}`);
 
   if (!REGISTER_COMMANDS) {
     console.log('ℹ Command registration skipped');
@@ -141,7 +115,7 @@ bot.on('ready', async () => {
 });
 
 // =============================
-// Helper
+// Helper: resolve target message safely
 // =============================
 function getTargetMessageFromInteraction(interaction) {
   const targetId = interaction?.data?.target_id;
@@ -153,15 +127,18 @@ function getTargetMessageFromInteraction(interaction) {
 
   const messages = resolved.messages;
 
+  // pattern 1: plain object
   if (messages && typeof messages === 'object' && messages[targetId]) {
     return messages[targetId];
   }
 
+  // pattern 2: Map-like
   if (messages && typeof messages.get === 'function') {
     const msg = messages.get(targetId);
     if (msg) return msg;
   }
 
+  // pattern 3: search by key coercion
   if (messages && typeof messages === 'object') {
     for (const [key, value] of Object.entries(messages)) {
       if (String(key) === String(targetId)) {
@@ -182,17 +159,14 @@ bot.on('interactionCreate', async (interaction) => {
     console.log('type:', interaction.type);
     console.log('name:', interaction.data?.name);
 
-    // Slash command
     if (interaction.data?.type === 1 && interaction.data?.name === 'ping') {
       await interaction.createMessage({
         content: 'pong',
         flags: 64
       });
-      console.log('✅ /ping reply success');
       return;
     }
 
-    // Message context menu only
     if (interaction.data?.type !== 3) {
       await interaction.createMessage({
         content: '未対応のコマンドです。',
@@ -205,10 +179,7 @@ bot.on('interactionCreate', async (interaction) => {
 
     console.log('target_id:', interaction.data?.target_id);
     console.log('resolved message found?:', !!targetMessage);
-    console.log(
-      'resolved message keys:',
-      Object.keys(interaction.data?.resolved?.messages || {})
-    );
+    console.log('resolved message keys:', Object.keys(interaction.data?.resolved?.messages || {}));
 
     const originalText = targetMessage?.content || '';
     const locale = interaction.locale || 'ja';
@@ -226,22 +197,15 @@ bot.on('interactionCreate', async (interaction) => {
 
     await interaction.defer(64);
 
-    // =============================
-    // Fast Translate
-    // =============================
     if (interaction.data.name === 'Fast Translate') {
       try {
         const res = await translate(originalText, { to: targetLang });
-
         await interaction.editOriginalMessage({
           content: `⚡ **Fast Translate (Google):**\n${res.text}`
         });
-
-        console.log('✅ Fast Translate reply success');
         return;
       } catch (err) {
         console.error('❌ Fast Translate Error:', err);
-
         await interaction.editOriginalMessage({
           content: '⚡ Fast Translateでエラーが発生しました。'
         });
@@ -249,9 +213,6 @@ bot.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // =============================
-    // Deep Translate
-    // =============================
     if (interaction.data.name === 'Deep Translate') {
       if (!model) {
         await interaction.editOriginalMessage({
@@ -271,12 +232,9 @@ Text: ${originalText}`;
         await interaction.editOriginalMessage({
           content: `🧠 **Deep Translate (Gemini):**\n${translatedText}`
         });
-
-        console.log('✅ Deep Translate reply success');
         return;
       } catch (err) {
         console.error('❌ Deep Translate Error:', err);
-
         await interaction.editOriginalMessage({
           content: '🧠 Deep Translateでエラーが発生しました。'
         });
@@ -289,7 +247,6 @@ Text: ${originalText}`;
     });
   } catch (err) {
     console.error('❌ interaction error:', err);
-
     try {
       await interaction.createMessage({
         content: 'エラーが発生しました。',
@@ -298,30 +255,6 @@ Text: ${originalText}`;
     } catch (_) {}
   }
 });
-
-// =============================
-// Status Logs
-// =============================
-setTimeout(() => {
-  console.log('⏰ 20s status check', {
-    ready: botReady,
-    uptime: Math.floor(process.uptime()),
-  });
-}, 20000);
-
-setTimeout(() => {
-  console.log('⏰ 60s status check', {
-    ready: botReady,
-    uptime: Math.floor(process.uptime()),
-  });
-}, 60000);
-
-setInterval(() => {
-  console.log('🩺 heartbeat', {
-    ready: botReady,
-    uptime: Math.floor(process.uptime()),
-  });
-}, 30000);
 
 // =============================
 // Process Events
