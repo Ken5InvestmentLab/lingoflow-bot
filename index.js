@@ -1,7 +1,14 @@
 require('dotenv').config();
 
-const Eris = require('eris');
 const express = require('express');
+const {
+  Client,
+  GatewayIntentBits,
+  ContextMenuCommandBuilder,
+  ApplicationCommandType,
+  MessageFlags,
+  Events,
+} = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const translate = require('google-translate-api-next');
 
@@ -24,6 +31,25 @@ console.log('GUILD_ID exists?:', !!GUILD_ID);
 console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
 console.log('PORT:', PORT);
+console.log('RELAY_TOKEN exists?:', !!process.env.RELAY_TOKEN);
+
+// =============================
+// Locale -> target language
+// =============================
+function normalizeTargetLang(rawLocale) {
+  const loc = String(rawLocale || 'ja').toLowerCase();
+
+  // 中国語は zh に潰さず保持する
+  if (loc === 'zh-cn' || loc === 'zh-sg' || loc === 'zh-hans') {
+    return 'zh-CN';
+  }
+  if (loc === 'zh-tw' || loc === 'zh-hk' || loc === 'zh-mo' || loc === 'zh-hant') {
+    return 'zh-TW';
+  }
+
+  // それ以外は基本 lang 部分だけ
+  return loc.split('-')[0];
+}
 
 // =============================
 // Gemini
@@ -32,58 +58,22 @@ let model = null;
 if (GEMINI_API_KEY) {
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
   model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
+} else {
+  console.warn('⚠ GEMINI_API_KEY が未設定のため Deep Translate は使えません');
 }
 
 // =============================
-// Express
+// Discord Client
 // =============================
-const app = express();
-
-let botReady = false;
-
-app.get('/', (req, res) => {
-  res.status(200).send('Bot is running!');
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
 });
-
-app.get('/healthz', (req, res) => {
-  res.status(200).json({
-    ok: true,
-    ready: botReady,
-    uptimeSeconds: Math.floor(process.uptime()),
-    timestamp: new Date().toISOString(),
-  });
-});
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Web server running on port ${PORT}`);
-});
-
-// =============================
-// Eris Client
-// =============================
-const bot = new Eris(TOKEN, {
-  intents: ['guilds'],
-  autoreconnect: true,
-  maxShards: 1,
-  restMode: true,
-});
-
-// =============================
-// Logging
-// =============================
-bot.on('error', (err) => console.error('❌ bot error:', err));
-bot.on('warn', (msg) => console.warn('⚠ warn:', msg));
-bot.on('disconnect', (err) => console.warn('⚠ disconnect:', err));
-bot.on('reconnecting', (attempt) => console.warn('🔁 reconnecting, attempt:', attempt));
-bot.on('resume', () => console.log('✅ session resumed'));
 
 // =============================
 // Ready
 // =============================
-bot.on('ready', async () => {
-  botReady = true;
-  console.log('🎉 ready event fired');
-  console.log(`✅ Ready as ${bot.user.username}#${bot.user.discriminator}`);
+client.once(Events.ClientReady, async (readyClient) => {
+  console.log(`✅ LingoFlow Ready! Logged in as ${readyClient.user.tag}`);
 
   if (!REGISTER_COMMANDS) {
     console.log('ℹ Command registration skipped');
@@ -91,200 +81,217 @@ bot.on('ready', async () => {
   }
 
   try {
-    const commands = [
-      {
-        name: 'ping',
-        description: '疎通確認用コマンド',
-        type: 1
-      },
-      {
-        name: 'Fast Translate',
-        type: 3
-      },
-      {
-        name: 'Deep Translate',
-        type: 3
-      }
-    ];
+    const fastData = new ContextMenuCommandBuilder()
+      .setName('Fast Translate')
+      .setType(ApplicationCommandType.Message);
 
-    await bot.bulkEditGuildCommands(GUILD_ID, commands);
-    console.log('✅ Commands registered successfully');
+    const deepData = new ContextMenuCommandBuilder()
+      .setName('Deep Translate')
+      .setType(ApplicationCommandType.Message);
+
+    const guild = client.guilds.cache.get(GUILD_ID);
+
+    if (!guild) {
+      console.error('❌ Guild not found. GUILD_ID を確認してください');
+      return;
+    }
+
+    await guild.commands.set([fastData, deepData]);
+    console.log('✅ Two commands registered successfully!');
   } catch (err) {
     console.error('❌ Command registration error:', err);
   }
 });
 
 // =============================
-// Helper: resolve target message safely
-// =============================
-function getTargetMessageFromInteraction(interaction) {
-  const targetId = interaction?.data?.target_id;
-  const resolved = interaction?.data?.resolved;
-
-  if (!targetId || !resolved) {
-    return null;
-  }
-
-  const messages = resolved.messages;
-
-  // pattern 1: plain object
-  if (messages && typeof messages === 'object' && messages[targetId]) {
-    return messages[targetId];
-  }
-
-  // pattern 2: Map-like
-  if (messages && typeof messages.get === 'function') {
-    const msg = messages.get(targetId);
-    if (msg) return msg;
-  }
-
-  // pattern 3: search by key coercion
-  if (messages && typeof messages === 'object') {
-    for (const [key, value] of Object.entries(messages)) {
-      if (String(key) === String(targetId)) {
-        return value;
-      }
-    }
-  }
-
-  return null;
-}
-
-// =============================
 // Interaction Handler
 // =============================
-bot.on('interactionCreate', async (interaction) => {
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isMessageContextMenuCommand()) return;
+  if (interaction.replied || interaction.deferred) return;
+
   try {
-    console.log('🔥 interactionCreate fired');
-    console.log('type:', interaction.type);
-    console.log('name:', interaction.data?.name);
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  } catch (e) {
+    console.error('❌ deferReply失敗 (3秒制限):', e.message);
+    return;
+  }
 
-    if (interaction.data?.type === 1 && interaction.data?.name === 'ping') {
-      await interaction.createMessage({
-        content: 'pong',
-        flags: 64
-      });
+  try {
+    const originalText = interaction.targetMessage?.content;
+    const rawLocale = interaction.locale || 'ja';
+    const targetLang = normalizeTargetLang(rawLocale);
+
+    console.log('[lang] raw locale =', rawLocale, '=> targetLang =', targetLang);
+
+    if (!originalText || !originalText.trim()) {
+      await interaction.editReply('翻訳するテキストがありません。').catch(() => {});
       return;
     }
 
-    if (interaction.data?.type !== 3) {
-      await interaction.createMessage({
-        content: '未対応のコマンドです。',
-        flags: 64
-      });
-      return;
-    }
-
-    const targetMessage = getTargetMessageFromInteraction(interaction);
-
-    console.log('target_id:', interaction.data?.target_id);
-    console.log('resolved message found?:', !!targetMessage);
-    console.log('resolved message keys:', Object.keys(interaction.data?.resolved?.messages || {}));
-
-    const originalText = targetMessage?.content || '';
-    const locale = interaction.locale || 'ja';
-    const targetLang = locale.split('-')[0];
-
-    console.log('originalText:', originalText);
-
-    if (!originalText.trim()) {
-      await interaction.createMessage({
-        content: '翻訳するテキストがありません。',
-        flags: 64
-      });
-      return;
-    }
-
-    await interaction.defer(64);
-
-    if (interaction.data.name === 'Fast Translate') {
+    // -----------------------------
+    // Fast Translate (Google)
+    // -----------------------------
+    if (interaction.commandName === 'Fast Translate') {
       try {
         const res = await translate(originalText, { to: targetLang });
-        await interaction.editOriginalMessage({
-          content: `⚡ **Fast Translate (Google):**\n${res.text}`
-        });
+        await interaction.editReply(`⚡ **Fast Translate (Google):**\n${res.text}`);
         return;
       } catch (err) {
         console.error('❌ Fast Translate Error:', err);
-        await interaction.editOriginalMessage({
-          content: '⚡ Fast Translateでエラーが発生しました。'
-        });
+        await interaction.editReply('⚡ Fast Translateでエラーが発生しました。').catch(() => {});
         return;
       }
     }
 
-    if (interaction.data.name === 'Deep Translate') {
+    // -----------------------------
+    // Deep Translate (Gemini)
+    // -----------------------------
+    if (interaction.commandName === 'Deep Translate') {
       if (!model) {
-        await interaction.editOriginalMessage({
-          content: '🧠 GEMINI_API_KEY が未設定のため、Deep Translate は利用できません。'
-        });
+        await interaction.editReply(
+          '🧠 GEMINI_API_KEY が未設定のため、Deep Translate は現在利用できません。'
+        ).catch(() => {});
         return;
       }
 
-      try {
-        const prompt = `Translate the following text into the language of code "${targetLang}".
+      const prompt = `Translate the following text into the language of code "${targetLang}".
 Context: Online chat. Deliver only the translated text.
 Text: ${originalText}`;
 
-        const result = await model.generateContent(prompt);
-        const translatedText = result.response.text();
+      let attempts = 0;
+      let translatedText = null;
 
-        await interaction.editOriginalMessage({
-          content: `🧠 **Deep Translate (Gemini):**\n${translatedText}`
-        });
+      while (attempts < 3) {
+        try {
+          const result = await model.generateContent(prompt);
+          translatedText = result.response.text();
+          break;
+        } catch (err) {
+          if (err?.status === 429) {
+            await interaction.editReply(
+              "⚠️ You may have exceeded the free tier limit. Please wait a while or use 'Fast Translate' instead.\n\nGemini APIの利用制限に達した可能性があります。しばらく待つか、'Fast Translate' を使ってください。"
+            ).catch(() => {});
+            return;
+          }
+
+          if (err?.status === 503 || err?.status === 500) {
+            attempts++;
+            console.log(`🔁 Retry attempt ${attempts}...`);
+            await new Promise((res) => setTimeout(res, 2000));
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      if (!translatedText) {
+        await interaction.editReply(
+          '🧠 Deep Translateが現在混雑しています。少し時間を置いて再試行してください。'
+        ).catch(() => {});
         return;
-      } catch (err) {
-        console.error('❌ Deep Translate Error:', err);
-        await interaction.editOriginalMessage({
-          content: '🧠 Deep Translateでエラーが発生しました。'
-        });
-        return;
+      }
+
+      await interaction.editReply(`🧠 **Deep Translate (Gemini):**\n${translatedText}`);
+      return;
+    }
+
+  } catch (error) {
+    console.error('🔥 Interaction Execution Error:', error);
+    await interaction.editReply('翻訳処理中に予期せぬエラーが発生しました。').catch(() => {});
+  }
+});
+
+// =============================
+// Express
+// =============================
+const app = express();
+app.use(express.json({ limit: '1mb' }));
+
+app.get('/', (req, res) => {
+  res.send('Bot is running!');
+});
+
+app.get('/healthz', (req, res) => {
+  res.status(200).json({
+    ok: true,
+    ready: client.isReady(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// =============================
+// Discord Webhook Relay
+// GAS（Google共用IP）から直接Discordを叩くとCloudflare 1015で弾かれるため、
+// VPS（専有IP）を経由させる中継エンドポイント。bot認証は不要、純粋にHTTP転送。
+// =============================
+app.post('/relay/discord', async (req, res) => {
+  const auth = req.headers.authorization || '';
+  const expected = `Bearer ${process.env.RELAY_TOKEN || ''}`;
+  if (!process.env.RELAY_TOKEN || auth !== expected) {
+    return res.status(401).json({ ok: false, error: 'unauthorized' });
+  }
+
+  const { webhookUrl, payload } = req.body || {};
+  if (typeof webhookUrl !== 'string' ||
+      !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(webhookUrl)) {
+    return res.status(400).json({ ok: false, error: 'invalid webhookUrl' });
+  }
+  if (!payload || typeof payload !== 'object') {
+    return res.status(400).json({ ok: false, error: 'missing payload' });
+  }
+
+  const doFetch = async () => {
+    const r = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return { code: r.status, text: await r.text() };
+  };
+
+  try {
+    let result = await doFetch();
+
+    // Discord本体の429ならretry_afterに従って1回だけリトライ。Cloudflareの1015はそのまま返す。
+    if (result.code === 429) {
+      const is1015 = /error code:\s*1015/i.test(result.text);
+      if (is1015) {
+        return res.status(200).json({ ok: false, code: 429, text: result.text, is1015: true });
+      }
+      try {
+        const parsed = JSON.parse(result.text);
+        const waitMs = Math.min(5000, Math.ceil(Number(parsed.retry_after || 1) * 1000) + 200);
+        await new Promise((r) => setTimeout(r, waitMs));
+        result = await doFetch();
+      } catch (_) {
+        // JSONでなければそのまま返す
       }
     }
 
-    await interaction.editOriginalMessage({
-      content: '未対応のコマンドです。'
+    return res.status(200).json({
+      ok: result.code === 200 || result.code === 204,
+      code: result.code,
+      text: result.text,
+      is1015: false,
     });
-  } catch (err) {
-    console.error('❌ interaction error:', err);
-    try {
-      await interaction.createMessage({
-        content: 'エラーが発生しました。',
-        flags: 64
-      });
-    } catch (_) {}
-  }
-});
-
-// =============================
-// Process Events
-// =============================
-process.on('unhandledRejection', (reason) => {
-  console.error('❌ unhandledRejection:', reason);
-});
-
-process.on('uncaughtException', (err) => {
-  console.error('❌ uncaughtException:', err);
-});
-
-process.on('SIGTERM', () => {
-  console.log('⚠ SIGTERM received, shutting down gracefully...');
-  try {
-    bot.disconnect({ reconnect: false });
-    console.log('✅ Bot disconnected');
   } catch (e) {
-    console.error('❌ disconnect error:', e);
+    return res.status(500).json({ ok: false, error: String(e) });
   }
-  process.exit(0);
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 Web server running on port ${PORT}`);
 });
 
 // =============================
-// Connect
+// Error Handling
 // =============================
-if (!TOKEN) {
-  console.error('❌ DISCORD_TOKEN がないため Discord に接続できません');
-} else {
-  console.log('11. before bot.connect');
-  bot.connect();
-  console.log('12. after bot.connect call');
-}
+client.on('error', console.error);
+process.on('unhandledRejection', console.error);
+process.on('uncaughtException', console.error);
+
+// =============================
+// Login
+// =============================
+client.login(TOKEN);
