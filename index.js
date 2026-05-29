@@ -11,6 +11,10 @@ const {
 } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const translate = require('google-translate-api-next');
+const { execFile } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 // =============================
 // Environment Variables
@@ -20,6 +24,8 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GUILD_ID = process.env.GUILD_ID;
 const PORT = Number(process.env.PORT) || 10000;
 const REGISTER_COMMANDS = process.env.REGISTER_COMMANDS === 'true';
+// JPX需給PDF抽出用の pdftotext バイナリ（Xpdf版。-table 対応必須）
+const PDFTOTEXT_PATH = process.env.PDFTOTEXT_PATH || 'pdftotext';
 
 // =============================
 // Boot Logs
@@ -32,6 +38,7 @@ console.log('REGISTER_COMMANDS:', REGISTER_COMMANDS);
 console.log('NODE_VERSION:', process.version);
 console.log('PORT:', PORT);
 console.log('RELAY_TOKEN exists?:', !!process.env.RELAY_TOKEN);
+console.log('PDFTOTEXT_PATH:', PDFTOTEXT_PATH);
 
 // =============================
 // Locale -> target language
@@ -277,6 +284,81 @@ app.post('/relay/discord', async (req, res) => {
     });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// =============================
+// JPX需給PDF抽出（GAS完全自動化用）
+// GAS（Google共用IP）はpdftotextを実行できず、Drive OCRでは密な12列表が崩れる。
+// VPS（専有IP・pdftotext -table）でPDFを解析し、銘柄別の売り残/買い残JSONを返す中継。
+// 解析ロジックは取引履歴GAS側の importJpxDataFromSheet と同一（売り=values[0], 買い=values[2]）。
+// =============================
+function parseJpxMarginText(text) {
+  const codeRe = /\b(\d{4}[A-Z]?)0\b/;       // 5桁内部コード→4桁(+英字)を抽出
+  const numRe = /([▲]?[\d,]+)/g;             // ▲=マイナス。カンマ区切り数値
+  const map = {};
+  const lines = String(text).split(/\r?\n/);
+  for (const line of lines) {
+    if (!line || !line.trim()) continue;
+    const m = line.match(codeRe);
+    if (!m) continue;
+    const idx = line.indexOf(m[0]);
+    let dataString = line.substring(idx + m[0].length);
+    dataString = dataString.replace(/\s*JP\w+\s+/, ' '); // ISIN（JP...）を除去
+    const values = dataString.match(numRe);
+    if (!values || values.length < 3) continue;
+    const sell = parseInt(values[0].replace(/[▲,]/g, ''), 10); // 合計売り残
+    const buy = parseInt(values[2].replace(/[▲,]/g, ''), 10);  // 合計買い残
+    if (Number.isNaN(sell) || Number.isNaN(buy) || sell < 0 || buy < 0) continue;
+    map[m[1]] = { sell, buy };
+  }
+  return map;
+}
+
+app.post('/jpx/margin', async (req, res) => {
+  const auth = req.headers.authorization || '';
+  const expected = `Bearer ${process.env.RELAY_TOKEN || ''}`;
+  if (!process.env.RELAY_TOKEN || auth !== expected) {
+    return res.status(401).json({ ok: false, error: 'unauthorized' });
+  }
+
+  // dateは厳密に8桁数字のみ許可（URL/ファイル名/コマンド注入の防止）
+  const date = String((req.body && req.body.date) || '');
+  if (!/^\d{8}$/.test(date)) {
+    return res.status(400).json({ ok: false, error: 'invalid date (expect yyyymmdd)' });
+  }
+
+  const url = `https://www.jpx.co.jp/markets/statistics-equities/margin/tvdivq0000001rnl-att/syumatsu${date}00.pdf`;
+  let tmpFile = null;
+  try {
+    const r = await fetch(url);
+    if (r.status === 404) {
+      // JPX未公開（直近金曜分など）。GAS側は正常スキップ扱い
+      return res.status(404).json({ ok: false, code: 404, error: 'PDF not published yet' });
+    }
+    if (!r.ok) {
+      return res.status(502).json({ ok: false, code: r.status, error: 'JPX fetch failed' });
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    tmpFile = path.join(os.tmpdir(), `jpx_${date}_${process.pid}.pdf`);
+    fs.writeFileSync(tmpFile, buf);
+
+    const text = await new Promise((resolve, reject) => {
+      execFile(
+        PDFTOTEXT_PATH,
+        ['-table', tmpFile, '-'],
+        { maxBuffer: 32 * 1024 * 1024, timeout: 30000 },
+        (err, stdout) => (err ? reject(err) : resolve(stdout))
+      );
+    });
+
+    const data = parseJpxMarginText(text);
+    return res.status(200).json({ ok: true, date, count: Object.keys(data).length, data });
+  } catch (e) {
+    console.error('[jpx/margin] error:', (e && e.message) ? e.message : e);
+    return res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+  } finally {
+    if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch (_) {} }
   }
 });
 
